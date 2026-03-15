@@ -1,5 +1,5 @@
 {
-  "originHash" : "24a723309d7a0039d3df3051106f77ac1ed7068a02508e3a6804e41d757e6c72",
+  "originHash" : "9cd4abfed0aa1fb1ea838376b4c6ca89fae60afcc780472de3169867f703e8a6",
   "pins" : [
     {
       "identity" : "commander",
@@ -16,6 +16,15 @@
       "location" : "https://github.com/steipete/ElevenLabsKit",
       "state" : {
         "revision" : "7e3c948d8340abe3977014f3de020edf221e9269",
+        "version" : "0.1.0"
+      }
+    },
+    {
+      "identity" : "openaittskit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mrkhachaturov/OpenAITTSKit",
+      "state" : {
+        "revision" : "4ef2171003467dafbe51a0d819781dae1283adc0",
         "version" : "0.1.0"
       }
     },
