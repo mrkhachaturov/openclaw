@@ -90,6 +90,9 @@ final class TalkModeManager: NSObject {
     private var mainSessionKey: String = "main"
     private var fallbackVoiceId: String?
     private var lastPlaybackWasPCM: Bool = false
+    private var activeProvider: String = Self.defaultTalkProvider
+    private var baseUrl: String?
+    private var instructions: String?
     /// Set when the ElevenLabs API rejects PCM format (e.g. 403 subscription_required).
     /// Once set, all subsequent requests in this session use MP3 instead of re-trying PCM.
     private var pcmFormatUnavailable: Bool = false
@@ -1022,8 +1025,39 @@ final class TalkModeManager: NSObject {
                 nil
             }
             let canUseElevenLabs = (voiceId?.isEmpty == false) && (apiKey?.isEmpty == false)
+            let canUseOpenAI = self.activeProvider == "openai" && (apiKey?.isEmpty == false)
 
-            if canUseElevenLabs, let voiceId, let apiKey {
+            if canUseOpenAI, let apiKey {
+                // OpenAI TTS path
+                let voice = preferredVoice ?? "alloy"
+                let model = directive?.modelId ?? self.currentModelId ?? self.defaultModelId ?? "gpt-4o-mini-tts"
+                GatewayDiagnostics.log("talk tts: provider=openai voice=\(voice) model=\(model)")
+
+                let client = OpenAITTSClient(apiKey: apiKey, baseUrl: self.baseUrl)
+                let stream = client.streamSynthesize(
+                    model: model,
+                    voice: voice,
+                    text: cleaned,
+                    speed: directive?.speed,
+                    instructions: self.instructions
+                )
+
+                if self.interruptOnSpeech {
+                    do { try self.startRecognition() } catch {
+                        self.logger.warning(
+                            "startRecognition during speak failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+
+                self.statusText = "Speaking…"
+                self.lastPlaybackWasPCM = false
+                let result = await self.mp3Player.play(stream: stream)
+                let duration = Date().timeIntervalSince(started)
+                self.logger.info("openai stream finished=\(result.finished, privacy: .public) dur=\(duration, privacy: .public)s")
+                if !result.finished, let interruptedAt = result.interruptedAt {
+                    self.lastInterruptedAtSeconds = interruptedAt
+                }
+            } else if canUseElevenLabs, let voiceId, let apiKey {
                 GatewayDiagnostics.log("talk tts: provider=elevenlabs voiceId=\(voiceId)")
                 let desiredOutputFormat = (directive?.outputFormat ?? self.defaultOutputFormat)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1315,7 +1349,7 @@ final class TalkModeManager: NSObject {
     }
 
     private func ensureIncrementalPrefetchForUpcomingSegment(context: IncrementalSpeechContext) -> Bool {
-        guard context.canUseElevenLabs else {
+        guard context.canUseElevenLabs || context.canUseOpenAI else {
             self.cancelIncrementalPrefetch()
             return false
         }
@@ -1332,7 +1366,40 @@ final class TalkModeManager: NSObject {
     }
 
     private func startIncrementalPrefetch(segment: String, context: IncrementalSpeechContext) {
-        guard context.canUseElevenLabs, let apiKey = context.apiKey, let voiceId = context.voiceId else { return }
+        guard let apiKey = context.apiKey else { return }
+        if context.canUseOpenAI {
+            let model = context.modelId ?? "gpt-4o-mini-tts"
+            let voice = context.voiceId ?? "alloy"
+            let id = UUID()
+            let task = Task { [weak self] in
+                let stream = OpenAITTSClient(apiKey: apiKey, baseUrl: context.baseUrl)
+                    .streamSynthesize(
+                        model: model,
+                        voice: voice,
+                        text: segment,
+                        speed: context.directive?.speed,
+                        instructions: context.instructions
+                    )
+                var chunks: [Data] = []
+                do {
+                    for try await chunk in stream {
+                        try Task.checkCancellation()
+                        chunks.append(chunk)
+                    }
+                    self?.completeIncrementalPrefetch(id: id, chunks: chunks)
+                } catch is CancellationError {
+                    self?.clearIncrementalPrefetch(id: id)
+                } catch {
+                    self?.failIncrementalPrefetch(id: id, error: error)
+                }
+            }
+            self.incrementalSpeechPrefetch = IncrementalSpeechPrefetchState(
+                id: id, segment: segment, context: context,
+                outputFormat: "mp3", chunks: nil, task: task)
+            return
+        }
+        // existing ElevenLabs prefetch path
+        guard context.canUseElevenLabs, let voiceId = context.voiceId else { return }
         let prefetchOutputFormat = self.resolveIncrementalPrefetchOutputFormat(context: context)
         let request = self.makeIncrementalTTSRequest(
             text: segment,
@@ -1487,7 +1554,10 @@ final class TalkModeManager: NSObject {
                     outputFormat: existing.outputFormat,
                     language: self.incrementalSpeechLanguage,
                     directive: existing.directive,
-                    canUseElevenLabs: existing.canUseElevenLabs)
+                    canUseElevenLabs: existing.canUseElevenLabs,
+                    canUseOpenAI: existing.canUseOpenAI,
+                    baseUrl: existing.baseUrl,
+                    instructions: existing.instructions)
             }
             return
         }
@@ -1527,6 +1597,7 @@ final class TalkModeManager: NSObject {
             nil
         }
         let canUseElevenLabs = (voiceId?.isEmpty == false) && (apiKey?.isEmpty == false)
+        let canUseOpenAI = self.activeProvider == "openai" && (apiKey?.isEmpty == false)
         return IncrementalSpeechContext(
             apiKey: apiKey,
             voiceId: voiceId,
@@ -1534,7 +1605,10 @@ final class TalkModeManager: NSObject {
             outputFormat: outputFormat,
             language: self.incrementalSpeechLanguage,
             directive: directive,
-            canUseElevenLabs: canUseElevenLabs)
+            canUseElevenLabs: canUseElevenLabs,
+            canUseOpenAI: canUseOpenAI,
+            baseUrl: self.baseUrl,
+            instructions: self.instructions)
     }
 
     private func makeIncrementalTTSRequest(
@@ -1629,28 +1703,51 @@ final class TalkModeManager: NSObject {
             context = resolvedContext
         }
 
-        guard context.canUseElevenLabs, let apiKey = context.apiKey, let voiceId = context.voiceId else {
+        guard context.canUseElevenLabs || context.canUseOpenAI, let apiKey = context.apiKey else {
             try? await TalkSystemSpeechSynthesizer.shared.speak(
                 text: text,
                 language: self.incrementalSpeechLanguage)
             return
         }
 
-        let client = ElevenLabsTTSClient(apiKey: apiKey)
-        let request = self.makeIncrementalTTSRequest(
-            text: text,
-            context: context,
-            outputFormat: context.outputFormat)
         let rawStream: AsyncThrowingStream<Data, Error>
-        if let prefetchedAudio, !prefetchedAudio.chunks.isEmpty {
-            rawStream = Self.makeBufferedAudioStream(chunks: prefetchedAudio.chunks)
+        if context.canUseOpenAI {
+            if let prefetchedAudio, !prefetchedAudio.chunks.isEmpty {
+                rawStream = Self.makeBufferedAudioStream(chunks: prefetchedAudio.chunks)
+            } else {
+                let voice = context.voiceId ?? "alloy"
+                let model = context.modelId ?? "gpt-4o-mini-tts"
+                rawStream = OpenAITTSClient(apiKey: apiKey, baseUrl: context.baseUrl)
+                    .streamSynthesize(
+                        model: model,
+                        voice: voice,
+                        text: text,
+                        speed: context.directive?.speed,
+                        instructions: context.instructions
+                    )
+            }
         } else {
-            rawStream = client.streamSynthesize(voiceId: voiceId, request: request)
+            guard let voiceId = context.voiceId else {
+                try? await TalkSystemSpeechSynthesizer.shared.speak(
+                    text: text,
+                    language: self.incrementalSpeechLanguage)
+                return
+            }
+            let client = ElevenLabsTTSClient(apiKey: apiKey)
+            let request = self.makeIncrementalTTSRequest(
+                text: text,
+                context: context,
+                outputFormat: context.outputFormat)
+            if let prefetchedAudio, !prefetchedAudio.chunks.isEmpty {
+                rawStream = Self.makeBufferedAudioStream(chunks: prefetchedAudio.chunks)
+            } else {
+                rawStream = client.streamSynthesize(voiceId: voiceId, request: request)
+            }
         }
         let playbackFormat = prefetchedAudio?.outputFormat ?? context.outputFormat
-        let sampleRate = TalkTTSValidation.pcmSampleRate(from: playbackFormat)
+        let sampleRate = context.canUseOpenAI ? nil : TalkTTSValidation.pcmSampleRate(from: playbackFormat)
         let result: StreamingPlaybackResult
-        if let sampleRate {
+        if let sampleRate, let voiceId = context.voiceId {
             let streamFailure = StreamFailureBox()
             let stream = Self.monitorStreamFailures(rawStream, failureBox: streamFailure)
             self.lastPlaybackWasPCM = true
@@ -1662,7 +1759,7 @@ final class TalkModeManager: NSObject {
                 }
                 self.lastPlaybackWasPCM = false
                 let mp3Format = ElevenLabsTTSClient.validatedOutputFormat("mp3_44100_128")
-                let mp3Stream = client.streamSynthesize(
+                let mp3Stream = ElevenLabsTTSClient(apiKey: apiKey).streamSynthesize(
                     voiceId: voiceId,
                     request: self.makeIncrementalTTSRequest(
                         text: text,
@@ -2011,7 +2108,10 @@ extension TalkModeManager {
             } else {
                 self.apiKey = (localApiKey?.isEmpty == false) ? localApiKey : configApiKey
             }
-            if activeProvider != Self.defaultTalkProvider {
+            self.activeProvider = activeProvider
+            self.baseUrl = parsed.baseUrl
+            self.instructions = parsed.instructions
+            if activeProvider != Self.defaultTalkProvider, activeProvider != "openai" {
                 self.apiKey = nil
                 GatewayDiagnostics.log(
                     "talk provider '\(activeProvider)' not yet supported on iOS; using system voice fallback")
@@ -2181,6 +2281,9 @@ private struct IncrementalSpeechContext: Equatable {
     let language: String?
     let directive: TalkDirective?
     let canUseElevenLabs: Bool
+    let canUseOpenAI: Bool
+    let baseUrl: String?
+    let instructions: String?
 }
 
 private struct IncrementalSpeechPrefetchState {
