@@ -503,7 +503,11 @@ final class TalkModeManager: NSObject {
         #endif
 
         self.stopRecognition()
-        self.speechRecognizer = SFSpeechRecognizer()
+        // Use the device's preferred language, not Locale.current (which reflects
+        // the app's supported localizations, not the user's actual preference).
+        let preferredLanguage = Locale.preferredLanguages.first ?? "en"
+        let deviceLocale = Locale(identifier: preferredLanguage)
+        self.speechRecognizer = SFSpeechRecognizer(locale: deviceLocale)
         guard let recognizer = self.speechRecognizer else {
             throw NSError(domain: "TalkMode", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "Speech recognizer unavailable",
@@ -1006,7 +1010,14 @@ final class TalkModeManager: NSObject {
             let started = Date()
             let configuredKey = self.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? self.apiKey : nil
             #if DEBUG
-            let resolvedKey = configuredKey ?? ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]
+            let resolvedKey: String?
+            if let configuredKey {
+                resolvedKey = configuredKey
+            } else if self.activeProvider == "openai" {
+                resolvedKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
+            } else {
+                resolvedKey = ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]
+            }
             #else
             let resolvedKey = configuredKey
             #endif
@@ -1236,9 +1247,15 @@ final class TalkModeManager: NSObject {
 
     private func applyDirective(_ directive: TalkDirective?) {
         let requestedVoice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedVoice = self.resolveVoiceAlias(requestedVoice)
-        if requestedVoice?.isEmpty == false, resolvedVoice == nil {
-            self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
+        // OpenAI uses voice names directly (e.g. "ash"), not ElevenLabs aliases.
+        let resolvedVoice: String?
+        if self.activeProvider == "openai" {
+            resolvedVoice = requestedVoice
+        } else {
+            resolvedVoice = self.resolveVoiceAlias(requestedVoice)
+            if requestedVoice?.isEmpty == false, resolvedVoice == nil {
+                self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
+            }
         }
         if let voice = resolvedVoice {
             if directive?.once != true {
@@ -1572,9 +1589,14 @@ final class TalkModeManager: NSObject {
 
     private func buildIncrementalSpeechContext(directive: TalkDirective?) async -> IncrementalSpeechContext {
         let requestedVoice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedVoice = self.resolveVoiceAlias(requestedVoice)
-        if requestedVoice?.isEmpty == false, resolvedVoice == nil {
-            self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
+        let resolvedVoice: String?
+        if self.activeProvider == "openai" {
+            resolvedVoice = requestedVoice
+        } else {
+            resolvedVoice = self.resolveVoiceAlias(requestedVoice)
+            if requestedVoice?.isEmpty == false, resolvedVoice == nil {
+                self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
+            }
         }
         let preferredVoice = resolvedVoice ?? self.currentVoiceId ?? self.defaultVoiceId
         let modelId = directive?.modelId ?? self.currentModelId ?? self.defaultModelId
@@ -2106,6 +2128,7 @@ extension TalkModeManager {
             let configApiKey = Self.normalizedTalkApiKey(rawConfigApiKey)
             let localApiKey = Self.normalizedTalkApiKey(
                 GatewaySettingsStore.loadTalkProviderApiKey(provider: activeProvider))
+
             if rawConfigApiKey == Self.redactedConfigSentinel {
                 self.apiKey = (localApiKey?.isEmpty == false) ? localApiKey : nil
                 GatewayDiagnostics.log("talk config apiKey redacted; using local override if present")
