@@ -17,6 +17,7 @@ struct TalkModeGatewayConfigState {
     let lang: String?
     let folderId: String?
     let authType: String?
+    let speed: Double?
     let interruptOnSpeech: Bool?
     let silenceTimeoutMs: Int
 }
@@ -68,6 +69,11 @@ enum TalkModeGatewayConfigParser {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let authType = activeConfig?["authType"]?.stringValue?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let speed: Double? = {
+            if let num = activeConfig?["speed"]?.doubleValue { return num }
+            if let str = activeConfig?["speed"]?.stringValue, let num = Double(str) { return num }
+            return nil
+        }()
         let interruptOnSpeech = talk?["interruptOnSpeech"]?.boolValue
         let silenceTimeoutMs = TalkConfigParsing.resolvedSilenceTimeoutMs(
             talk,
@@ -88,6 +94,7 @@ enum TalkModeGatewayConfigParser {
             lang: lang,
             folderId: folderId,
             authType: authType,
+            speed: speed,
             interruptOnSpeech: interruptOnSpeech,
             silenceTimeoutMs: silenceTimeoutMs)
     }

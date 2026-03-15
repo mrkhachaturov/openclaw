@@ -98,6 +98,7 @@ final class TalkModeManager: NSObject {
     private var lang: String?
     private var folderId: String?
     private var authType: String?
+    private(set) var defaultSpeed: Double?
     /// Set when the ElevenLabs API rejects PCM format (e.g. 403 subscription_required).
     /// Once set, all subsequent requests in this session use MP3 instead of re-trying PCM.
     private var pcmFormatUnavailable: Bool = false
@@ -1053,7 +1054,7 @@ final class TalkModeManager: NSObject {
                     text: cleaned,
                     voice: voice,
                     role: role,
-                    speed: directive?.speed,
+                    speed: directive?.speed ?? self.defaultSpeed,
                     containerFormat: .oggOpus)
 
                 if self.interruptOnSpeech {
@@ -1083,7 +1084,7 @@ final class TalkModeManager: NSObject {
                     model: model,
                     voice: voice,
                     text: cleaned,
-                    speed: directive?.speed,
+                    speed: directive?.speed ?? self.defaultSpeed,
                     instructions: self.instructions
                 )
 
@@ -2266,6 +2267,7 @@ extension TalkModeManager {
             self.lang = parsed.lang
             self.folderId = parsed.folderId
             self.authType = parsed.authType
+            self.defaultSpeed = parsed.speed
             if activeProvider != Self.defaultTalkProvider, activeProvider != "openai", activeProvider != "yandex" {
                 self.apiKey = nil
                 GatewayDiagnostics.log(

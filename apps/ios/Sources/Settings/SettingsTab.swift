@@ -340,6 +340,9 @@ struct SettingsTab: View {
                                 if let role = self.appModel.talkMode.role, !role.isEmpty {
                                     LabeledContent("Role", value: role)
                                 }
+                                if let speed = self.appModel.talkMode.defaultSpeed {
+                                    LabeledContent("Speed", value: String(format: "%.1f", speed))
+                                }
                                 Text("Configured on gateway via talk.providers.\(self.appModel.talkMode.activeProvider).")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
