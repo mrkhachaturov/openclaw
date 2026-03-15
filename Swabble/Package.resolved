@@ -1,5 +1,5 @@
 {
-  "originHash" : "9cd4abfed0aa1fb1ea838376b4c6ca89fae60afcc780472de3169867f703e8a6",
+  "originHash" : "3a5bd0be12b4be95c7c70c393b7af3e826b9f4acef29e02798ebbc66dfaaad94",
   "pins" : [
     {
       "identity" : "commander",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/mrkhachaturov/OpenAITTSKit",
       "state" : {
-        "revision" : "4ef2171003467dafbe51a0d819781dae1283adc0",
-        "version" : "0.1.0"
+        "revision" : "c69e0bc1c080f5fbfb7d495dc4d6b6a56bde046a",
+        "version" : "0.2.0"
       }
     },
     {
