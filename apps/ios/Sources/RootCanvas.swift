@@ -107,6 +107,28 @@ struct RootCanvas: View {
         }
         .gatewayTrustPromptAlert()
         .deepLinkAgentPromptAlert()
+        .alert(
+            "Switch Bot",
+            isPresented: Binding(
+                get: { self.appModel.pendingAgentSwitchId != nil },
+                set: { if !$0 { self.appModel.pendingAgentSwitchId = nil; self.appModel.pendingAgentSwitchName = nil } }
+            )
+        ) {
+            Button("Switch") {
+                if let id = self.appModel.pendingAgentSwitchId {
+                    self.appModel.setSelectedAgentId(id)
+                }
+                self.appModel.pendingAgentSwitchId = nil
+                self.appModel.pendingAgentSwitchName = nil
+                self.updateHomeCanvasState()
+            }
+            Button("Cancel", role: .cancel) {
+                self.appModel.pendingAgentSwitchId = nil
+                self.appModel.pendingAgentSwitchName = nil
+            }
+        } message: {
+            Text("Switch active bot to \(self.appModel.pendingAgentSwitchName ?? "this agent")?")
+        }
         .sheet(item: self.$presentedSheet) { sheet in
             switch sheet {
             case .settings:
