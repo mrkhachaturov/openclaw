@@ -99,7 +99,7 @@ final class TalkModeManager: NSObject {
     private var folderId: String?
     private var authType: String?
     private(set) var defaultSpeed: Double?
-    private var talkPromptOverride: String?
+    private(set) var talkPromptOverride: String?
     /// Set when the ElevenLabs API rejects PCM format (e.g. 403 subscription_required).
     /// Once set, all subsequent requests in this session use MP3 instead of re-trying PCM.
     private var pcmFormatUnavailable: Bool = false
