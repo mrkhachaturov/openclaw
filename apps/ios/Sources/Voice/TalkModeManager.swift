@@ -1054,7 +1054,7 @@ final class TalkModeManager: NSObject {
                     voice: voice,
                     role: role,
                     speed: directive?.speed,
-                    containerFormat: .mp3)
+                    containerFormat: .oggOpus)
 
                 if self.interruptOnSpeech {
                     do { try self.startRecognition() } catch {
@@ -1859,7 +1859,7 @@ final class TalkModeManager: NSObject {
                         voice: voice,
                         role: context.role,
                         speed: context.directive?.speed,
-                        containerFormat: .mp3)
+                        containerFormat: .oggOpus)
             }
         } else if context.canUseOpenAI {
             if let prefetchedAudio, !prefetchedAudio.chunks.isEmpty {
