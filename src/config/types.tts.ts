@@ -1,6 +1,6 @@
 import type { SecretInput } from "./types.secrets.js";
 
-export type TtsProvider = "elevenlabs" | "openai" | "edge";
+export type TtsProvider = "elevenlabs" | "openai" | "edge" | "yandex";
 
 export type TtsMode = "final" | "all";
 
@@ -65,6 +65,23 @@ export type TtsConfig = {
     speed?: number;
     /** System-level instructions for the TTS model (gpt-4o-mini-tts only). */
     instructions?: string;
+  };
+  /** Yandex SpeechKit configuration. */
+  yandex?: {
+    apiKey?: SecretInput;
+    /** Yandex Cloud folder ID (required for IAM token auth). */
+    folderId?: string;
+    voice?: string;
+    /** Language code (default: ru-RU). */
+    lang?: string;
+    /** Voice role/emotion (e.g. "friendly", "strict", "evil"). */
+    role?: string;
+    /** Speaking speed (0.1–3.0, default 1.0). */
+    speed?: number;
+    /** Audio format: oggopus (default), mp3, lpcm. */
+    format?: string;
+    /** Sample rate for lpcm format: 48000, 16000, 8000. */
+    sampleRateHertz?: number;
   };
   /** Microsoft Edge (node-edge-tts) configuration. */
   edge?: {

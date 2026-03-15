@@ -156,7 +156,12 @@ export function parseTtsDirectives(
             if (!policy.allowProvider) {
               break;
             }
-            if (rawValue === "openai" || rawValue === "elevenlabs" || rawValue === "edge") {
+            if (
+              rawValue === "openai" ||
+              rawValue === "elevenlabs" ||
+              rawValue === "edge" ||
+              rawValue === "yandex"
+            ) {
               overrides.provider = rawValue;
             } else {
               warnings.push(`unsupported provider "${rawValue}"`);
@@ -671,6 +676,103 @@ export async function openaiTTS(params: {
 
     if (!response.ok) {
       throw new Error(`OpenAI TTS API error (${response.status})`);
+    }
+
+    return Buffer.from(await response.arrayBuffer());
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+const DEFAULT_YANDEX_TTS_HOST = "https://tts.api.cloud.yandex.net:443";
+
+export const YANDEX_TTS_VOICES = [
+  "ermil",
+  "zahar",
+  "marina",
+  "oksana",
+  "jane",
+  "omazh",
+  "masha",
+  "alexander",
+  "dasha",
+  "amira",
+  "john",
+] as const;
+
+export function isValidYandexVoice(voice: string): boolean {
+  return YANDEX_TTS_VOICES.includes(voice as (typeof YANDEX_TTS_VOICES)[number]);
+}
+
+export async function yandexTTS(params: {
+  text: string;
+  apiKey: string;
+  folderId?: string;
+  voice: string;
+  lang?: string;
+  role?: string;
+  speed?: number;
+  format?: string;
+  sampleRateHertz?: number;
+  /** "apiKey" (default) or "iamToken". Controls the Authorization header format. */
+  authType?: "apiKey" | "iamToken";
+  timeoutMs: number;
+}): Promise<Buffer> {
+  const {
+    text,
+    apiKey,
+    folderId,
+    voice,
+    lang = "ru-RU",
+    role,
+    speed,
+    format = "oggopus",
+    sampleRateHertz,
+    authType = "apiKey",
+    timeoutMs,
+  } = params;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const body = new URLSearchParams();
+    body.set("text", text);
+    body.set("voice", voice);
+    body.set("lang", lang);
+    body.set("format", format);
+    if (speed != null) {
+      body.set("speed", String(speed));
+    }
+    if (role) {
+      body.set("emotion", role);
+    }
+    if (format === "lpcm" && sampleRateHertz != null) {
+      body.set("sampleRateHertz", String(sampleRateHertz));
+    }
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/x-www-form-urlencoded",
+    };
+    if (authType === "iamToken") {
+      headers.Authorization = `Bearer ${apiKey}`;
+    } else {
+      headers.Authorization = `Api-Key ${apiKey}`;
+    }
+    if (folderId) {
+      headers["x-folder-id"] = folderId;
+    }
+
+    const response = await fetch(`${DEFAULT_YANDEX_TTS_HOST}/api/tts/v1`, {
+      method: "POST",
+      headers,
+      body: body.toString(),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      throw new Error(`Yandex SpeechKit API error (${response.status}): ${errorBody}`);
     }
 
     return Buffer.from(await response.arrayBuffer());
