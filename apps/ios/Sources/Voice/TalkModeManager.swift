@@ -1589,17 +1589,38 @@ final class TalkModeManager: NSObject {
 
     private func buildIncrementalSpeechContext(directive: TalkDirective?) async -> IncrementalSpeechContext {
         let requestedVoice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedVoice: String?
+        let modelId = directive?.modelId ?? self.currentModelId ?? self.defaultModelId
+        let configuredKey = self.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? self.apiKey : nil
+
         if self.activeProvider == "openai" {
-            resolvedVoice = requestedVoice
-        } else {
-            resolvedVoice = self.resolveVoiceAlias(requestedVoice)
-            if requestedVoice?.isEmpty == false, resolvedVoice == nil {
-                self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
-            }
+            // OpenAI path: voice names are used directly, no alias resolution or API calls.
+            let voice = requestedVoice ?? self.currentVoiceId ?? self.defaultVoiceId ?? "alloy"
+            #if DEBUG
+            let apiKey = (configuredKey ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #else
+            let apiKey = configuredKey
+            #endif
+            let canUseOpenAI = apiKey?.isEmpty == false
+            return IncrementalSpeechContext(
+                apiKey: apiKey,
+                voiceId: voice,
+                modelId: modelId,
+                outputFormat: nil,
+                language: self.incrementalSpeechLanguage,
+                directive: directive,
+                canUseElevenLabs: false,
+                canUseOpenAI: canUseOpenAI,
+                baseUrl: self.baseUrl,
+                instructions: self.instructions)
+        }
+
+        // ElevenLabs path: resolve voice aliases and validate output format.
+        let resolvedVoice = self.resolveVoiceAlias(requestedVoice)
+        if requestedVoice?.isEmpty == false, resolvedVoice == nil {
+            self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
         }
         let preferredVoice = resolvedVoice ?? self.currentVoiceId ?? self.defaultVoiceId
-        let modelId = directive?.modelId ?? self.currentModelId ?? self.defaultModelId
         let desiredOutputFormat = (directive?.outputFormat ?? self.defaultOutputFormat)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedOutputFormat = (desiredOutputFormat?.isEmpty == false) ? desiredOutputFormat : nil
@@ -1609,21 +1630,18 @@ final class TalkModeManager: NSObject {
             self.logger.warning(
                 "talk output_format unsupported for local playback: \(requestedOutputFormat, privacy: .public)")
         }
-
-        let configuredKey = self.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? self.apiKey : nil
         #if DEBUG
-        let resolvedKey = configuredKey ?? ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]
+        let apiKey = (configuredKey ?? ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         #else
-        let resolvedKey = configuredKey
+        let apiKey = configuredKey
         #endif
-        let apiKey = resolvedKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         let voiceId: String? = if let apiKey, !apiKey.isEmpty {
             await self.resolveVoiceId(preferred: preferredVoice, apiKey: apiKey)
         } else {
             nil
         }
         let canUseElevenLabs = (voiceId?.isEmpty == false) && (apiKey?.isEmpty == false)
-        let canUseOpenAI = self.activeProvider == "openai" && (apiKey?.isEmpty == false)
         return IncrementalSpeechContext(
             apiKey: apiKey,
             voiceId: voiceId,
@@ -1632,7 +1650,7 @@ final class TalkModeManager: NSObject {
             language: self.incrementalSpeechLanguage,
             directive: directive,
             canUseElevenLabs: canUseElevenLabs,
-            canUseOpenAI: canUseOpenAI,
+            canUseOpenAI: false,
             baseUrl: self.baseUrl,
             instructions: self.instructions)
     }
