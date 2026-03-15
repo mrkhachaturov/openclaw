@@ -319,7 +319,7 @@ struct SettingsTab: View {
                                 Text("Talk Voice (Gateway)")
                                     .font(.footnote.weight(.semibold))
                                     .foregroundStyle(.secondary)
-                                LabeledContent("Provider", value: "ElevenLabs")
+                                LabeledContent("Provider", value: Self.talkProviderDisplayName(self.appModel.talkMode.activeProvider))
                                 LabeledContent(
                                     "API Key",
                                     value: self.appModel.talkMode.gatewayTalkConfigLoaded
@@ -335,7 +335,7 @@ struct SettingsTab: View {
                                 LabeledContent(
                                     "Default Voice",
                                     value: self.appModel.talkMode.gatewayTalkDefaultVoiceId ?? "auto (first available)")
-                                Text("Configured on gateway via talk.apiKey, talk.modelId, and talk.voiceId.")
+                                Text("Configured on gateway via talk.providers.\(self.appModel.talkMode.activeProvider).")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
@@ -595,6 +595,15 @@ struct SettingsTab: View {
         }
         let trimmed = self.appModel.gatewayStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Not connected" : trimmed
+    }
+
+    private static func talkProviderDisplayName(_ provider: String) -> String {
+        switch provider {
+        case "elevenlabs": return "ElevenLabs"
+        case "openai": return "OpenAI"
+        case "yandex": return "Yandex"
+        default: return provider.capitalized
+        }
     }
 
     private func featureToggle(

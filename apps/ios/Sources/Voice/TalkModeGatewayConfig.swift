@@ -10,6 +10,13 @@ struct TalkModeGatewayConfigState {
     let defaultModelId: String
     let defaultOutputFormat: String?
     let rawConfigApiKey: String?
+    let baseUrl: String?
+    let instructions: String?
+    // Yandex-specific
+    let role: String?
+    let lang: String?
+    let folderId: String?
+    let authType: String?
     let interruptOnSpeech: Bool?
     let silenceTimeoutMs: Int
 }
@@ -49,6 +56,18 @@ enum TalkModeGatewayConfigParser {
         let defaultOutputFormat = activeConfig?["outputFormat"]?.stringValue?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let rawConfigApiKey = activeConfig?["apiKey"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseUrl = activeConfig?["baseUrl"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let instructions = activeConfig?["instructions"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let role = activeConfig?["role"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let lang = activeConfig?["lang"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let folderId = activeConfig?["folderId"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let authType = activeConfig?["authType"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let interruptOnSpeech = talk?["interruptOnSpeech"]?.boolValue
         let silenceTimeoutMs = TalkConfigParsing.resolvedSilenceTimeoutMs(
             talk,
@@ -63,6 +82,12 @@ enum TalkModeGatewayConfigParser {
             defaultModelId: defaultModelId,
             defaultOutputFormat: defaultOutputFormat,
             rawConfigApiKey: rawConfigApiKey,
+            baseUrl: baseUrl,
+            instructions: instructions,
+            role: role,
+            lang: lang,
+            folderId: folderId,
+            authType: authType,
             interruptOnSpeech: interruptOnSpeech,
             silenceTimeoutMs: silenceTimeoutMs)
     }

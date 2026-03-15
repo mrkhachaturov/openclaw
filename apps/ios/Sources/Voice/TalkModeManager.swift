@@ -90,6 +90,14 @@ final class TalkModeManager: NSObject {
     private var mainSessionKey: String = "main"
     private var fallbackVoiceId: String?
     private var lastPlaybackWasPCM: Bool = false
+    private(set) var activeProvider: String = TalkModeManager.defaultTalkProvider
+    private var baseUrl: String?
+    private var instructions: String?
+    // Yandex-specific
+    private var role: String?
+    private var lang: String?
+    private var folderId: String?
+    private var authType: String?
     /// Set when the ElevenLabs API rejects PCM format (e.g. 403 subscription_required).
     /// Once set, all subsequent requests in this session use MP3 instead of re-trying PCM.
     private var pcmFormatUnavailable: Bool = false
@@ -500,7 +508,11 @@ final class TalkModeManager: NSObject {
         #endif
 
         self.stopRecognition()
-        self.speechRecognizer = SFSpeechRecognizer()
+        // Use the device's preferred language, not Locale.current (which reflects
+        // the app's supported localizations, not the user's actual preference).
+        let preferredLanguage = Locale.preferredLanguages.first ?? "en"
+        let deviceLocale = Locale(identifier: preferredLanguage)
+        self.speechRecognizer = SFSpeechRecognizer(locale: deviceLocale)
         guard let recognizer = self.speechRecognizer else {
             throw NSError(domain: "TalkMode", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "Speech recognizer unavailable",
@@ -1001,29 +1013,112 @@ final class TalkModeManager: NSObject {
 
         do {
             let started = Date()
-            let language = ElevenLabsTTSClient.validatedLanguage(directive?.language)
-            let requestedVoice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let resolvedVoice = self.resolveVoiceAlias(requestedVoice)
-            if requestedVoice?.isEmpty == false, resolvedVoice == nil {
-                self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
-            }
-
             let configuredKey = self.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? self.apiKey : nil
             #if DEBUG
-            let resolvedKey = configuredKey ?? ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]
+            let resolvedKey: String?
+            if let configuredKey {
+                resolvedKey = configuredKey
+            } else if self.activeProvider == "openai" {
+                resolvedKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
+            } else if self.activeProvider == "yandex" {
+                resolvedKey = ProcessInfo.processInfo.environment["YANDEX_API_KEY"]
+            } else {
+                resolvedKey = ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]
+            }
             #else
             let resolvedKey = configuredKey
             #endif
             let apiKey = resolvedKey?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let preferredVoice = resolvedVoice ?? self.currentVoiceId ?? self.defaultVoiceId
-            let voiceId: String? = if let apiKey, !apiKey.isEmpty {
-                await self.resolveVoiceId(preferred: preferredVoice, apiKey: apiKey)
-            } else {
-                nil
-            }
-            let canUseElevenLabs = (voiceId?.isEmpty == false) && (apiKey?.isEmpty == false)
+            let canUseYandex = self.activeProvider == "yandex" && (apiKey?.isEmpty == false)
+            let canUseOpenAI = self.activeProvider == "openai" && (apiKey?.isEmpty == false)
 
-            if canUseElevenLabs, let voiceId, let apiKey {
+            if canUseYandex, let apiKey {
+                // Yandex SpeechKit TTS path.
+                let voice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ?? self.currentVoiceId ?? self.defaultVoiceId ?? "marina"
+                let role = self.role
+                let lang = self.lang ?? "ru-RU"
+                GatewayDiagnostics.log("talk tts: provider=yandex voice=\(voice) role=\(role ?? "nil") lang=\(lang)")
+
+                let auth: YandexTTSAuth = if self.authType == "iamToken" {
+                    .iamToken(apiKey)
+                } else {
+                    .apiKey(apiKey)
+                }
+                let client = YandexTTSClient(
+                    auth: auth,
+                    folderId: self.folderId,
+                    v3BaseURL: self.baseUrl)
+                let stream = client.streamSynthesizeV3(
+                    text: cleaned,
+                    voice: voice,
+                    role: role,
+                    speed: directive?.speed,
+                    containerFormat: .oggOpus)
+
+                if self.interruptOnSpeech {
+                    do { try self.startRecognition() } catch {
+                        self.logger.warning(
+                            "startRecognition during speak failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+
+                self.statusText = "Speaking…"
+                self.lastPlaybackWasPCM = false
+                let result = await self.mp3Player.play(stream: stream)
+                let duration = Date().timeIntervalSince(started)
+                self.logger.info("yandex stream finished=\(result.finished, privacy: .public) dur=\(duration, privacy: .public)s")
+                if !result.finished, let interruptedAt = result.interruptedAt {
+                    self.lastInterruptedAtSeconds = interruptedAt
+                }
+            } else if canUseOpenAI, let apiKey {
+                // OpenAI TTS path — skip ElevenLabs voice resolution entirely.
+                let voice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ?? self.currentVoiceId ?? self.defaultVoiceId ?? "alloy"
+                let model = directive?.modelId ?? self.currentModelId ?? self.defaultModelId ?? "gpt-4o-mini-tts"
+                GatewayDiagnostics.log("talk tts: provider=openai voice=\(voice) model=\(model)")
+
+                let client = OpenAITTSClient(apiKey: apiKey, baseUrl: self.baseUrl)
+                let stream = client.streamSynthesize(
+                    model: model,
+                    voice: voice,
+                    text: cleaned,
+                    speed: directive?.speed,
+                    instructions: self.instructions
+                )
+
+                if self.interruptOnSpeech {
+                    do { try self.startRecognition() } catch {
+                        self.logger.warning(
+                            "startRecognition during speak failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+
+                self.statusText = "Speaking…"
+                self.lastPlaybackWasPCM = false
+                let result = await self.mp3Player.play(stream: stream)
+                let duration = Date().timeIntervalSince(started)
+                self.logger.info("openai stream finished=\(result.finished, privacy: .public) dur=\(duration, privacy: .public)s")
+                if !result.finished, let interruptedAt = result.interruptedAt {
+                    self.lastInterruptedAtSeconds = interruptedAt
+                }
+            } else {
+                // ElevenLabs / system voice path — resolve voice via ElevenLabs API.
+                let language = ElevenLabsTTSClient.validatedLanguage(directive?.language)
+                let requestedVoice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolvedVoice = self.resolveVoiceAlias(requestedVoice)
+                if requestedVoice?.isEmpty == false, resolvedVoice == nil {
+                    self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
+                }
+                let preferredVoice = resolvedVoice ?? self.currentVoiceId ?? self.defaultVoiceId
+                let voiceId: String? = if let apiKey, !apiKey.isEmpty {
+                    await self.resolveVoiceId(preferred: preferredVoice, apiKey: apiKey)
+                } else {
+                    nil
+                }
+                let canUseElevenLabs = (voiceId?.isEmpty == false) && (apiKey?.isEmpty == false)
+
+                if canUseElevenLabs, let voiceId, let apiKey {
                 GatewayDiagnostics.log("talk tts: provider=elevenlabs voiceId=\(voiceId)")
                 let desiredOutputFormat = (directive?.outputFormat ?? self.defaultOutputFormat)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1113,6 +1208,7 @@ final class TalkModeManager: NSObject {
                 self.statusText = "Speaking (System)…"
                 try await TalkSystemSpeechSynthesizer.shared.speak(text: cleaned, language: language)
             }
+            } // end ElevenLabs / system voice else block
         } catch {
             self.logger.error(
                 "tts failed: \(error.localizedDescription, privacy: .public); falling back to system voice")
@@ -1198,9 +1294,15 @@ final class TalkModeManager: NSObject {
 
     private func applyDirective(_ directive: TalkDirective?) {
         let requestedVoice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedVoice = self.resolveVoiceAlias(requestedVoice)
-        if requestedVoice?.isEmpty == false, resolvedVoice == nil {
-            self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
+        // OpenAI and Yandex use voice names directly, not ElevenLabs aliases.
+        let resolvedVoice: String?
+        if self.activeProvider == "openai" || self.activeProvider == "yandex" {
+            resolvedVoice = requestedVoice
+        } else {
+            resolvedVoice = self.resolveVoiceAlias(requestedVoice)
+            if requestedVoice?.isEmpty == false, resolvedVoice == nil {
+                self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
+            }
         }
         if let voice = resolvedVoice {
             if directive?.once != true {
@@ -1315,7 +1417,7 @@ final class TalkModeManager: NSObject {
     }
 
     private func ensureIncrementalPrefetchForUpcomingSegment(context: IncrementalSpeechContext) -> Bool {
-        guard context.canUseElevenLabs else {
+        guard context.canUseElevenLabs || context.canUseOpenAI else {
             self.cancelIncrementalPrefetch()
             return false
         }
@@ -1332,7 +1434,40 @@ final class TalkModeManager: NSObject {
     }
 
     private func startIncrementalPrefetch(segment: String, context: IncrementalSpeechContext) {
-        guard context.canUseElevenLabs, let apiKey = context.apiKey, let voiceId = context.voiceId else { return }
+        guard let apiKey = context.apiKey else { return }
+        if context.canUseOpenAI {
+            let model = context.modelId ?? "gpt-4o-mini-tts"
+            let voice = context.voiceId ?? "alloy"
+            let id = UUID()
+            let task = Task { [weak self] in
+                let stream = OpenAITTSClient(apiKey: apiKey, baseUrl: context.baseUrl)
+                    .streamSynthesize(
+                        model: model,
+                        voice: voice,
+                        text: segment,
+                        speed: context.directive?.speed,
+                        instructions: context.instructions
+                    )
+                var chunks: [Data] = []
+                do {
+                    for try await chunk in stream {
+                        try Task.checkCancellation()
+                        chunks.append(chunk)
+                    }
+                    self?.completeIncrementalPrefetch(id: id, chunks: chunks)
+                } catch is CancellationError {
+                    self?.clearIncrementalPrefetch(id: id)
+                } catch {
+                    self?.failIncrementalPrefetch(id: id, error: error)
+                }
+            }
+            self.incrementalSpeechPrefetch = IncrementalSpeechPrefetchState(
+                id: id, segment: segment, context: context,
+                outputFormat: "mp3", chunks: nil, task: task)
+            return
+        }
+        // existing ElevenLabs prefetch path
+        guard context.canUseElevenLabs, let voiceId = context.voiceId else { return }
         let prefetchOutputFormat = self.resolveIncrementalPrefetchOutputFormat(context: context)
         let request = self.makeIncrementalTTSRequest(
             text: segment,
@@ -1487,7 +1622,15 @@ final class TalkModeManager: NSObject {
                     outputFormat: existing.outputFormat,
                     language: self.incrementalSpeechLanguage,
                     directive: existing.directive,
-                    canUseElevenLabs: existing.canUseElevenLabs)
+                    canUseElevenLabs: existing.canUseElevenLabs,
+                    canUseOpenAI: existing.canUseOpenAI,
+                    canUseYandex: existing.canUseYandex,
+                    baseUrl: existing.baseUrl,
+                    instructions: existing.instructions,
+                    role: existing.role,
+                    lang: existing.lang,
+                    folderId: existing.folderId,
+                    authType: existing.authType)
             }
             return
         }
@@ -1498,12 +1641,68 @@ final class TalkModeManager: NSObject {
 
     private func buildIncrementalSpeechContext(directive: TalkDirective?) async -> IncrementalSpeechContext {
         let requestedVoice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelId = directive?.modelId ?? self.currentModelId ?? self.defaultModelId
+        let configuredKey = self.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? self.apiKey : nil
+
+        if self.activeProvider == "yandex" {
+            // Yandex path: voice names used directly, no alias resolution.
+            let voice = requestedVoice ?? self.currentVoiceId ?? self.defaultVoiceId ?? "marina"
+            #if DEBUG
+            let apiKey = (configuredKey ?? ProcessInfo.processInfo.environment["YANDEX_API_KEY"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #else
+            let apiKey = configuredKey
+            #endif
+            let canUseYandex = apiKey?.isEmpty == false
+            return IncrementalSpeechContext(
+                apiKey: apiKey,
+                voiceId: voice,
+                modelId: modelId,
+                outputFormat: nil,
+                language: self.incrementalSpeechLanguage,
+                directive: directive,
+                canUseElevenLabs: false,
+                canUseOpenAI: false,
+                canUseYandex: canUseYandex,
+                baseUrl: self.baseUrl,
+                instructions: self.instructions,
+                role: self.role,
+                lang: self.lang,
+                folderId: self.folderId,
+                authType: self.authType)
+        }
+
+        if self.activeProvider == "openai" {
+            // OpenAI path: voice names are used directly, no alias resolution or API calls.
+            let voice = requestedVoice ?? self.currentVoiceId ?? self.defaultVoiceId ?? "alloy"
+            #if DEBUG
+            let apiKey = (configuredKey ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #else
+            let apiKey = configuredKey
+            #endif
+            let canUseOpenAI = apiKey?.isEmpty == false
+            return IncrementalSpeechContext(
+                apiKey: apiKey,
+                voiceId: voice,
+                modelId: modelId,
+                outputFormat: nil,
+                language: self.incrementalSpeechLanguage,
+                directive: directive,
+                canUseElevenLabs: false,
+                canUseOpenAI: canUseOpenAI,
+                canUseYandex: false,
+                baseUrl: self.baseUrl,
+                instructions: self.instructions,
+                role: nil, lang: nil, folderId: nil, authType: nil)
+        }
+
+        // ElevenLabs path: resolve voice aliases and validate output format.
         let resolvedVoice = self.resolveVoiceAlias(requestedVoice)
         if requestedVoice?.isEmpty == false, resolvedVoice == nil {
             self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
         }
         let preferredVoice = resolvedVoice ?? self.currentVoiceId ?? self.defaultVoiceId
-        let modelId = directive?.modelId ?? self.currentModelId ?? self.defaultModelId
         let desiredOutputFormat = (directive?.outputFormat ?? self.defaultOutputFormat)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedOutputFormat = (desiredOutputFormat?.isEmpty == false) ? desiredOutputFormat : nil
@@ -1513,14 +1712,12 @@ final class TalkModeManager: NSObject {
             self.logger.warning(
                 "talk output_format unsupported for local playback: \(requestedOutputFormat, privacy: .public)")
         }
-
-        let configuredKey = self.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? self.apiKey : nil
         #if DEBUG
-        let resolvedKey = configuredKey ?? ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]
+        let apiKey = (configuredKey ?? ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         #else
-        let resolvedKey = configuredKey
+        let apiKey = configuredKey
         #endif
-        let apiKey = resolvedKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         let voiceId: String? = if let apiKey, !apiKey.isEmpty {
             await self.resolveVoiceId(preferred: preferredVoice, apiKey: apiKey)
         } else {
@@ -1534,7 +1731,12 @@ final class TalkModeManager: NSObject {
             outputFormat: outputFormat,
             language: self.incrementalSpeechLanguage,
             directive: directive,
-            canUseElevenLabs: canUseElevenLabs)
+            canUseElevenLabs: canUseElevenLabs,
+            canUseOpenAI: false,
+            canUseYandex: false,
+            baseUrl: self.baseUrl,
+            instructions: self.instructions,
+            role: nil, lang: nil, folderId: nil, authType: nil)
     }
 
     private func makeIncrementalTTSRequest(
@@ -1629,28 +1831,73 @@ final class TalkModeManager: NSObject {
             context = resolvedContext
         }
 
-        guard context.canUseElevenLabs, let apiKey = context.apiKey, let voiceId = context.voiceId else {
+        guard context.canUseElevenLabs || context.canUseOpenAI || context.canUseYandex,
+              let apiKey = context.apiKey else {
             try? await TalkSystemSpeechSynthesizer.shared.speak(
                 text: text,
                 language: self.incrementalSpeechLanguage)
             return
         }
 
-        let client = ElevenLabsTTSClient(apiKey: apiKey)
-        let request = self.makeIncrementalTTSRequest(
-            text: text,
-            context: context,
-            outputFormat: context.outputFormat)
         let rawStream: AsyncThrowingStream<Data, Error>
-        if let prefetchedAudio, !prefetchedAudio.chunks.isEmpty {
-            rawStream = Self.makeBufferedAudioStream(chunks: prefetchedAudio.chunks)
+        if context.canUseYandex {
+            let voice = context.voiceId ?? "marina"
+            let auth: YandexTTSAuth = if context.authType == "iamToken" {
+                .iamToken(apiKey)
+            } else {
+                .apiKey(apiKey)
+            }
+            if let prefetchedAudio, !prefetchedAudio.chunks.isEmpty {
+                rawStream = Self.makeBufferedAudioStream(chunks: prefetchedAudio.chunks)
+            } else {
+                rawStream = YandexTTSClient(
+                    auth: auth,
+                    folderId: context.folderId,
+                    v3BaseURL: context.baseUrl)
+                    .streamSynthesizeV3(
+                        text: text,
+                        voice: voice,
+                        role: context.role,
+                        speed: context.directive?.speed,
+                        containerFormat: .oggOpus)
+            }
+        } else if context.canUseOpenAI {
+            if let prefetchedAudio, !prefetchedAudio.chunks.isEmpty {
+                rawStream = Self.makeBufferedAudioStream(chunks: prefetchedAudio.chunks)
+            } else {
+                let voice = context.voiceId ?? "alloy"
+                let model = context.modelId ?? "gpt-4o-mini-tts"
+                rawStream = OpenAITTSClient(apiKey: apiKey, baseUrl: context.baseUrl)
+                    .streamSynthesize(
+                        model: model,
+                        voice: voice,
+                        text: text,
+                        speed: context.directive?.speed,
+                        instructions: context.instructions
+                    )
+            }
         } else {
-            rawStream = client.streamSynthesize(voiceId: voiceId, request: request)
+            guard let voiceId = context.voiceId else {
+                try? await TalkSystemSpeechSynthesizer.shared.speak(
+                    text: text,
+                    language: self.incrementalSpeechLanguage)
+                return
+            }
+            let client = ElevenLabsTTSClient(apiKey: apiKey)
+            let request = self.makeIncrementalTTSRequest(
+                text: text,
+                context: context,
+                outputFormat: context.outputFormat)
+            if let prefetchedAudio, !prefetchedAudio.chunks.isEmpty {
+                rawStream = Self.makeBufferedAudioStream(chunks: prefetchedAudio.chunks)
+            } else {
+                rawStream = client.streamSynthesize(voiceId: voiceId, request: request)
+            }
         }
         let playbackFormat = prefetchedAudio?.outputFormat ?? context.outputFormat
-        let sampleRate = TalkTTSValidation.pcmSampleRate(from: playbackFormat)
+        let sampleRate = (context.canUseOpenAI || context.canUseYandex) ? nil : TalkTTSValidation.pcmSampleRate(from: playbackFormat)
         let result: StreamingPlaybackResult
-        if let sampleRate {
+        if let sampleRate, let voiceId = context.voiceId {
             let streamFailure = StreamFailureBox()
             let stream = Self.monitorStreamFailures(rawStream, failureBox: streamFailure)
             self.lastPlaybackWasPCM = true
@@ -1662,7 +1909,7 @@ final class TalkModeManager: NSObject {
                 }
                 self.lastPlaybackWasPCM = false
                 let mp3Format = ElevenLabsTTSClient.validatedOutputFormat("mp3_44100_128")
-                let mp3Stream = client.streamSynthesize(
+                let mp3Stream = ElevenLabsTTSClient(apiKey: apiKey).streamSynthesize(
                     voiceId: voiceId,
                     request: self.makeIncrementalTTSRequest(
                         text: text,
@@ -2005,13 +2252,21 @@ extension TalkModeManager {
             let configApiKey = Self.normalizedTalkApiKey(rawConfigApiKey)
             let localApiKey = Self.normalizedTalkApiKey(
                 GatewaySettingsStore.loadTalkProviderApiKey(provider: activeProvider))
+
             if rawConfigApiKey == Self.redactedConfigSentinel {
                 self.apiKey = (localApiKey?.isEmpty == false) ? localApiKey : nil
                 GatewayDiagnostics.log("talk config apiKey redacted; using local override if present")
             } else {
                 self.apiKey = (localApiKey?.isEmpty == false) ? localApiKey : configApiKey
             }
-            if activeProvider != Self.defaultTalkProvider {
+            self.activeProvider = activeProvider
+            self.baseUrl = parsed.baseUrl
+            self.instructions = parsed.instructions
+            self.role = parsed.role
+            self.lang = parsed.lang
+            self.folderId = parsed.folderId
+            self.authType = parsed.authType
+            if activeProvider != Self.defaultTalkProvider, activeProvider != "openai", activeProvider != "yandex" {
                 self.apiKey = nil
                 GatewayDiagnostics.log(
                     "talk provider '\(activeProvider)' not yet supported on iOS; using system voice fallback")
@@ -2181,6 +2436,15 @@ private struct IncrementalSpeechContext: Equatable {
     let language: String?
     let directive: TalkDirective?
     let canUseElevenLabs: Bool
+    let canUseOpenAI: Bool
+    let canUseYandex: Bool
+    let baseUrl: String?
+    let instructions: String?
+    // Yandex-specific
+    let role: String?
+    let lang: String?
+    let folderId: String?
+    let authType: String?
 }
 
 private struct IncrementalSpeechPrefetchState {
