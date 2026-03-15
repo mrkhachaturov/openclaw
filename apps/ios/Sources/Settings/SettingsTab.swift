@@ -329,9 +329,11 @@ struct SettingsTab: View {
                                                 : "Not configured"
                                         )
                                         : "Not loaded")
-                                LabeledContent(
-                                    "Default Model",
-                                    value: self.appModel.talkMode.gatewayTalkDefaultModelId ?? "eleven_v3 (fallback)")
+                                if self.appModel.talkMode.activeProvider != "yandex" {
+                                    LabeledContent(
+                                        "Default Model",
+                                        value: self.appModel.talkMode.gatewayTalkDefaultModelId ?? "eleven_v3 (fallback)")
+                                }
                                 LabeledContent(
                                     "Default Voice",
                                     value: self.appModel.talkMode.gatewayTalkDefaultVoiceId ?? "auto (first available)")
