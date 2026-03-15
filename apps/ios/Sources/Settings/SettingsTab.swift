@@ -337,6 +337,9 @@ struct SettingsTab: View {
                                 LabeledContent(
                                     "Default Voice",
                                     value: self.appModel.talkMode.gatewayTalkDefaultVoiceId ?? "auto (first available)")
+                                if let role = self.appModel.talkMode.role, !role.isEmpty {
+                                    LabeledContent("Role", value: role)
+                                }
                                 Text("Configured on gateway via talk.providers.\(self.appModel.talkMode.activeProvider).")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)

@@ -94,7 +94,7 @@ final class TalkModeManager: NSObject {
     private var baseUrl: String?
     private var instructions: String?
     // Yandex-specific
-    private var role: String?
+    private(set) var role: String?
     private var lang: String?
     private var folderId: String?
     private var authType: String?
