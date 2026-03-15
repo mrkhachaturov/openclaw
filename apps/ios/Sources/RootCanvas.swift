@@ -286,7 +286,7 @@ struct RootCanvas: View {
                 activeAgentBadge: agents.first(where: { $0.isActive })?.badge ?? "OC",
                 activeAgentCaption: "Selected on this phone",
                 agentCount: agents.count,
-                agents: Array(agents.prefix(6)),
+                agents: agents,
                 footer: "The overview refreshes on reconnect and when the app returns to foreground.")
         case .connecting:
             return HomeCanvasPayload(
@@ -301,7 +301,7 @@ struct RootCanvas: View {
                 activeAgentBadge: "OC",
                 activeAgentCaption: "Gateway session in progress",
                 agentCount: agents.count,
-                agents: Array(agents.prefix(4)),
+                agents: agents,
                 footer: "If the gateway is reachable, reconnect should complete without intervention.")
         case .error, .disconnected:
             return HomeCanvasPayload(
