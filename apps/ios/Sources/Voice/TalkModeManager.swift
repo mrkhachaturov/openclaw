@@ -90,7 +90,7 @@ final class TalkModeManager: NSObject {
     private var mainSessionKey: String = "main"
     private var fallbackVoiceId: String?
     private var lastPlaybackWasPCM: Bool = false
-    private var activeProvider: String = TalkModeManager.defaultTalkProvider
+    private(set) var activeProvider: String = TalkModeManager.defaultTalkProvider
     private var baseUrl: String?
     private var instructions: String?
     /// Set when the ElevenLabs API rejects PCM format (e.g. 403 subscription_required).
