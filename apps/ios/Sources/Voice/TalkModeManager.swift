@@ -90,7 +90,7 @@ final class TalkModeManager: NSObject {
     private var mainSessionKey: String = "main"
     private var fallbackVoiceId: String?
     private var lastPlaybackWasPCM: Bool = false
-    private var activeProvider: String = Self.defaultTalkProvider
+    private var activeProvider: String = TalkModeManager.defaultTalkProvider
     private var baseUrl: String?
     private var instructions: String?
     /// Set when the ElevenLabs API rejects PCM format (e.g. 403 subscription_required).
@@ -1004,13 +1004,6 @@ final class TalkModeManager: NSObject {
 
         do {
             let started = Date()
-            let language = ElevenLabsTTSClient.validatedLanguage(directive?.language)
-            let requestedVoice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let resolvedVoice = self.resolveVoiceAlias(requestedVoice)
-            if requestedVoice?.isEmpty == false, resolvedVoice == nil {
-                self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
-            }
-
             let configuredKey = self.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? self.apiKey : nil
             #if DEBUG
             let resolvedKey = configuredKey ?? ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]
@@ -1018,18 +1011,12 @@ final class TalkModeManager: NSObject {
             let resolvedKey = configuredKey
             #endif
             let apiKey = resolvedKey?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let preferredVoice = resolvedVoice ?? self.currentVoiceId ?? self.defaultVoiceId
-            let voiceId: String? = if let apiKey, !apiKey.isEmpty {
-                await self.resolveVoiceId(preferred: preferredVoice, apiKey: apiKey)
-            } else {
-                nil
-            }
-            let canUseElevenLabs = (voiceId?.isEmpty == false) && (apiKey?.isEmpty == false)
             let canUseOpenAI = self.activeProvider == "openai" && (apiKey?.isEmpty == false)
 
             if canUseOpenAI, let apiKey {
-                // OpenAI TTS path
-                let voice = preferredVoice ?? "alloy"
+                // OpenAI TTS path — skip ElevenLabs voice resolution entirely.
+                let voice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ?? self.currentVoiceId ?? self.defaultVoiceId ?? "alloy"
                 let model = directive?.modelId ?? self.currentModelId ?? self.defaultModelId ?? "gpt-4o-mini-tts"
                 GatewayDiagnostics.log("talk tts: provider=openai voice=\(voice) model=\(model)")
 
@@ -1057,7 +1044,23 @@ final class TalkModeManager: NSObject {
                 if !result.finished, let interruptedAt = result.interruptedAt {
                     self.lastInterruptedAtSeconds = interruptedAt
                 }
-            } else if canUseElevenLabs, let voiceId, let apiKey {
+            } else {
+                // ElevenLabs / system voice path — resolve voice via ElevenLabs API.
+                let language = ElevenLabsTTSClient.validatedLanguage(directive?.language)
+                let requestedVoice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolvedVoice = self.resolveVoiceAlias(requestedVoice)
+                if requestedVoice?.isEmpty == false, resolvedVoice == nil {
+                    self.logger.warning("unknown voice alias \(requestedVoice ?? "?", privacy: .public)")
+                }
+                let preferredVoice = resolvedVoice ?? self.currentVoiceId ?? self.defaultVoiceId
+                let voiceId: String? = if let apiKey, !apiKey.isEmpty {
+                    await self.resolveVoiceId(preferred: preferredVoice, apiKey: apiKey)
+                } else {
+                    nil
+                }
+                let canUseElevenLabs = (voiceId?.isEmpty == false) && (apiKey?.isEmpty == false)
+
+                if canUseElevenLabs, let voiceId, let apiKey {
                 GatewayDiagnostics.log("talk tts: provider=elevenlabs voiceId=\(voiceId)")
                 let desiredOutputFormat = (directive?.outputFormat ?? self.defaultOutputFormat)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1147,6 +1150,7 @@ final class TalkModeManager: NSObject {
                 self.statusText = "Speaking (System)…"
                 try await TalkSystemSpeechSynthesizer.shared.speak(text: cleaned, language: language)
             }
+            } // end ElevenLabs / system voice else block
         } catch {
             self.logger.error(
                 "tts failed: \(error.localizedDescription, privacy: .public); falling back to system voice")
