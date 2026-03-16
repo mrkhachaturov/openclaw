@@ -156,7 +156,12 @@ export function parseTtsDirectives(
             if (!policy.allowProvider) {
               break;
             }
-            if (rawValue === "openai" || rawValue === "elevenlabs" || rawValue === "edge") {
+            if (
+              rawValue === "openai" ||
+              rawValue === "elevenlabs" ||
+              rawValue === "edge" ||
+              rawValue === "yandex"
+            ) {
               overrides.provider = rawValue;
             } else {
               warnings.push(`unsupported provider "${rawValue}"`);
@@ -674,6 +679,128 @@ export async function openaiTTS(params: {
     }
 
     return Buffer.from(await response.arrayBuffer());
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+const DEFAULT_YANDEX_TTS_HOST = "https://tts.api.cloud.yandex.net:443";
+
+export const YANDEX_TTS_VOICES = [
+  "ermil",
+  "zahar",
+  "marina",
+  "oksana",
+  "jane",
+  "omazh",
+  "masha",
+  "alexander",
+  "dasha",
+  "amira",
+  "john",
+] as const;
+
+export function isValidYandexVoice(voice: string): boolean {
+  return YANDEX_TTS_VOICES.includes(voice as (typeof YANDEX_TTS_VOICES)[number]);
+}
+
+/** Map short format names used in config to v3 containerAudioType values. */
+const YANDEX_V3_FORMAT_MAP: Record<string, string> = {
+  oggopus: "OGG_OPUS",
+  mp3: "MP3",
+  wav: "WAV",
+};
+
+export async function yandexTTS(params: {
+  text: string;
+  apiKey: string;
+  folderId?: string;
+  voice: string;
+  lang?: string;
+  role?: string;
+  speed?: number;
+  format?: string;
+  sampleRateHertz?: number;
+  /** "apiKey" (default) or "iamToken". Controls the Authorization header format. */
+  authType?: "apiKey" | "iamToken";
+  timeoutMs: number;
+}): Promise<Buffer> {
+  const {
+    text,
+    apiKey,
+    folderId,
+    voice,
+    lang: _lang = "ru-RU",
+    role,
+    speed,
+    format = "oggopus",
+    authType = "apiKey",
+    timeoutMs,
+  } = params;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const hints: Array<Record<string, string | number>> = [{ voice }];
+    if (role) {
+      hints.push({ role });
+    }
+    if (speed != null) {
+      hints.push({ speed: String(speed) });
+    }
+
+    const containerAudioType = YANDEX_V3_FORMAT_MAP[format] ?? "OGG_OPUS";
+
+    const body = JSON.stringify({
+      text,
+      outputAudioSpec: {
+        containerAudio: { containerAudioType },
+      },
+      hints,
+      loudnessNormalizationType: "LUFS",
+      unsafeMode: true,
+    });
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (authType === "iamToken") {
+      headers.Authorization = `Bearer ${apiKey}`;
+    } else {
+      headers.Authorization = `Api-Key ${apiKey}`;
+    }
+    if (folderId) {
+      headers["x-folder-id"] = folderId;
+    }
+
+    const response = await fetch(`${DEFAULT_YANDEX_TTS_HOST}/tts/v3/utteranceSynthesis`, {
+      method: "POST",
+      headers,
+      body,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      throw new Error(`Yandex SpeechKit v3 API error (${response.status}): ${errorBody}`);
+    }
+
+    // v3 REST returns newline-delimited JSON, each line has base64-encoded audio.
+    const responseText = await response.text();
+    const chunks: Buffer[] = [];
+    for (const line of responseText.trim().split("\n")) {
+      if (!line) {
+        continue;
+      }
+      const obj = JSON.parse(line);
+      const b64 = obj.result?.audioChunk?.data;
+      if (b64) {
+        chunks.push(Buffer.from(b64, "base64"));
+      }
+    }
+
+    return Buffer.concat(chunks);
   } finally {
     clearTimeout(timeout);
   }
