@@ -12,6 +12,7 @@ struct TalkModeGatewayConfigState {
     let rawConfigApiKey: String?
     let baseUrl: String?
     let instructions: String?
+    let talkPrompt: String?
     // Yandex-specific
     let role: String?
     let lang: String?
@@ -61,6 +62,8 @@ enum TalkModeGatewayConfigParser {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let instructions = activeConfig?["instructions"]?.stringValue?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let talkPrompt = activeConfig?["talkPrompt"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let role = activeConfig?["role"]?.stringValue?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let lang = activeConfig?["lang"]?.stringValue?
@@ -90,6 +93,7 @@ enum TalkModeGatewayConfigParser {
             rawConfigApiKey: rawConfigApiKey,
             baseUrl: baseUrl,
             instructions: instructions,
+            talkPrompt: talkPrompt,
             role: role,
             lang: lang,
             folderId: folderId,

@@ -343,6 +343,9 @@ struct SettingsTab: View {
                                 if let speed = self.appModel.talkMode.defaultSpeed {
                                     LabeledContent("Speed", value: String(format: "%.1f", speed))
                                 }
+                                if let prompt = self.appModel.talkMode.talkPromptOverride, !prompt.isEmpty {
+                                    LabeledContent("Prompt", value: prompt)
+                                }
                                 Text("Configured on gateway via talk.providers.\(self.appModel.talkMode.activeProvider).")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)

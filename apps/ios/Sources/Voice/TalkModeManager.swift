@@ -99,6 +99,7 @@ final class TalkModeManager: NSObject {
     private var folderId: String?
     private var authType: String?
     private(set) var defaultSpeed: Double?
+    private(set) var talkPromptOverride: String?
     /// Set when the ElevenLabs API rejects PCM format (e.g. 403 subscription_required).
     /// Once set, all subsequent requests in this session use MP3 instead of re-trying PCM.
     private var pcmFormatUnavailable: Bool = false
@@ -888,7 +889,8 @@ final class TalkModeManager: NSObject {
         return TalkPromptBuilder.build(
             transcript: transcript,
             interruptedAtSeconds: interrupted,
-            includeVoiceDirectiveHint: false)
+            includeVoiceDirectiveHint: false,
+            promptOverride: self.talkPromptOverride)
     }
 
     private enum ChatCompletionState: CustomStringConvertible {
@@ -2268,6 +2270,7 @@ extension TalkModeManager {
             self.folderId = parsed.folderId
             self.authType = parsed.authType
             self.defaultSpeed = parsed.speed
+            self.talkPromptOverride = parsed.talkPrompt
             if activeProvider != Self.defaultTalkProvider, activeProvider != "openai", activeProvider != "yandex" {
                 self.apiKey = nil
                 GatewayDiagnostics.log(

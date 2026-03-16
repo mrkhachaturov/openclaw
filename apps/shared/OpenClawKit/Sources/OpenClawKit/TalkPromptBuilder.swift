@@ -1,11 +1,14 @@
 public enum TalkPromptBuilder: Sendable {
+    public static let defaultPrompt = "Talk Mode active. Reply in a concise, spoken tone."
+
     public static func build(
         transcript: String,
         interruptedAtSeconds: Double?,
-        includeVoiceDirectiveHint: Bool = true
+        includeVoiceDirectiveHint: Bool = true,
+        promptOverride: String? = nil
     ) -> String {
         var lines: [String] = [
-            "Talk Mode active. Reply in a concise, spoken tone.",
+            promptOverride ?? defaultPrompt,
         ]
 
         if includeVoiceDirectiveHint {
