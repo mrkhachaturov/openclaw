@@ -92,6 +92,9 @@ final class NodeAppModel {
     var seamColorHex: String?
     private var mainSessionBaseKey: String = "main"
     var selectedAgentId: String?
+    /// Set when the user taps an agent card on the home canvas; triggers a confirmation dialog.
+    var pendingAgentSwitchId: String?
+    var pendingAgentSwitchName: String?
     var gatewayDefaultAgentId: String?
     var gatewayAgents: [AgentSummary] = []
     var homeCanvasRevision: Int = 0
@@ -240,6 +243,16 @@ final class NodeAppModel {
             return [:]
         }()
         guard !userAction.isEmpty else { return }
+
+        // Handle agent selection from home canvas tap.
+        if let action = userAction["action"] as? String, action == "selectAgent",
+           let agentId = userAction["agentId"] as? String
+        {
+            let agentName = (userAction["agentName"] as? String) ?? agentId
+            self.pendingAgentSwitchId = agentId
+            self.pendingAgentSwitchName = agentName
+            return
+        }
 
         guard let name = OpenClawCanvasA2UIAction.extractActionName(userAction) else { return }
         let actionId: String = {

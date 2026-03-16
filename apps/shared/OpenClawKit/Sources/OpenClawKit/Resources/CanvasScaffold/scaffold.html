@@ -633,6 +633,19 @@
           row.appendChild(badge);
           row.appendChild(text);
           card.appendChild(row);
+
+          if (!agent.isActive && agent.id) {
+            card.style.cursor = 'pointer';
+            card.addEventListener('click', function() {
+              var msg = {userAction: {action: 'selectAgent', agentId: agent.id, agentName: agent.name || agent.id}};
+              try {
+                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.openclawCanvasA2UIAction) {
+                  window.webkit.messageHandlers.openclawCanvasA2UIAction.postMessage(msg);
+                }
+              } catch(_) {}
+            });
+          }
+
           return card;
         }
 
