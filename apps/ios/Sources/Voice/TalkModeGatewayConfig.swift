@@ -10,6 +10,8 @@ struct TalkModeGatewayConfigState {
     let defaultModelId: String
     let defaultOutputFormat: String?
     let rawConfigApiKey: String?
+    let baseUrl: String?
+    let instructions: String?
     let interruptOnSpeech: Bool?
     let silenceTimeoutMs: Int
 }
@@ -49,6 +51,10 @@ enum TalkModeGatewayConfigParser {
         let defaultOutputFormat = activeConfig?["outputFormat"]?.stringValue?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let rawConfigApiKey = activeConfig?["apiKey"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseUrl = activeConfig?["baseUrl"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let instructions = activeConfig?["instructions"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let interruptOnSpeech = talk?["interruptOnSpeech"]?.boolValue
         let silenceTimeoutMs = TalkConfigParsing.resolvedSilenceTimeoutMs(
             talk,
@@ -63,6 +69,8 @@ enum TalkModeGatewayConfigParser {
             defaultModelId: defaultModelId,
             defaultOutputFormat: defaultOutputFormat,
             rawConfigApiKey: rawConfigApiKey,
+            baseUrl: baseUrl,
+            instructions: instructions,
             interruptOnSpeech: interruptOnSpeech,
             silenceTimeoutMs: silenceTimeoutMs)
     }

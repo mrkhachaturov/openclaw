@@ -319,7 +319,7 @@ struct SettingsTab: View {
                                 Text("Talk Voice (Gateway)")
                                     .font(.footnote.weight(.semibold))
                                     .foregroundStyle(.secondary)
-                                LabeledContent("Provider", value: "ElevenLabs")
+                                LabeledContent("Provider", value: self.appModel.talkMode.activeProvider.capitalized)
                                 LabeledContent(
                                     "API Key",
                                     value: self.appModel.talkMode.gatewayTalkConfigLoaded
@@ -335,7 +335,7 @@ struct SettingsTab: View {
                                 LabeledContent(
                                     "Default Voice",
                                     value: self.appModel.talkMode.gatewayTalkDefaultVoiceId ?? "auto (first available)")
-                                Text("Configured on gateway via talk.apiKey, talk.modelId, and talk.voiceId.")
+                                Text("Configured on gateway via talk.providers.\(self.appModel.talkMode.activeProvider).")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }

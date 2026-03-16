@@ -15,6 +15,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/steipete/ElevenLabsKit", exact: "0.1.0"),
+        .package(url: "https://github.com/mrkhachaturov/OpenAITTSKit", from: "0.1.0"),
         .package(url: "https://github.com/gonzalezreal/textual", exact: "0.3.1"),
     ],
     targets: [
@@ -29,6 +30,7 @@ let package = Package(
             dependencies: [
                 "OpenClawProtocol",
                 .product(name: "ElevenLabsKit", package: "ElevenLabsKit"),
+                .product(name: "OpenAITTSKit", package: "OpenAITTSKit"),
             ],
             path: "Sources/OpenClawKit",
             resources: [
