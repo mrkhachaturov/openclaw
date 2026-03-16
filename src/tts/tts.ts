@@ -37,13 +37,15 @@ import {
   isValidVoiceId,
   OPENAI_TTS_MODELS,
   OPENAI_TTS_VOICES,
+  YANDEX_TTS_VOICES,
   resolveOpenAITtsInstructions,
   openaiTTS,
+  yandexTTS,
   parseTtsDirectives,
   scheduleCleanup,
   summarizeText,
 } from "./tts-core.js";
-export { OPENAI_TTS_MODELS, OPENAI_TTS_VOICES } from "./tts-core.js";
+export { OPENAI_TTS_MODELS, OPENAI_TTS_VOICES, YANDEX_TTS_VOICES } from "./tts-core.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_TTS_MAX_LENGTH = 1500;
@@ -55,6 +57,9 @@ const DEFAULT_ELEVENLABS_VOICE_ID = "pMsXgVXv3BLzUgSXRplE";
 const DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2";
 const DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts";
 const DEFAULT_OPENAI_VOICE = "alloy";
+const DEFAULT_YANDEX_VOICE = "ermil";
+const DEFAULT_YANDEX_LANG = "ru-RU";
+const DEFAULT_YANDEX_FORMAT = "oggopus";
 const DEFAULT_EDGE_VOICE = "en-US-MichelleNeural";
 const DEFAULT_EDGE_LANG = "en-US";
 const DEFAULT_EDGE_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3";
@@ -72,6 +77,8 @@ const TELEGRAM_OUTPUT = {
   // ElevenLabs output formats use codec_sample_rate_bitrate naming.
   // Opus @ 48kHz/64kbps is a good voice-note tradeoff for Telegram.
   elevenlabs: "opus_48000_64",
+  // Yandex SpeechKit natively supports OGG/Opus — ideal for Telegram voice bubbles.
+  yandex: "oggopus",
   extension: ".opus",
   voiceCompatible: true,
 };
@@ -79,6 +86,7 @@ const TELEGRAM_OUTPUT = {
 const DEFAULT_OUTPUT = {
   openai: "mp3" as const,
   elevenlabs: "mp3_44100_128",
+  yandex: "mp3",
   extension: ".mp3",
   voiceCompatible: false,
 };
@@ -120,6 +128,17 @@ export type ResolvedTtsConfig = {
     voice: string;
     speed?: number;
     instructions?: string;
+  };
+  yandex: {
+    apiKey?: string;
+    folderId?: string;
+    voice: string;
+    lang: string;
+    role?: string;
+    speed?: number;
+    format: string;
+    sampleRateHertz?: number;
+    authType?: "apiKey" | "iamToken";
   };
   edge: {
     enabled: boolean;
@@ -309,6 +328,19 @@ export function resolveTtsConfig(cfg: OpenClawConfig): ResolvedTtsConfig {
       voice: raw.openai?.voice ?? DEFAULT_OPENAI_VOICE,
       speed: raw.openai?.speed,
       instructions: raw.openai?.instructions?.trim() || undefined,
+    },
+    yandex: {
+      apiKey: normalizeResolvedSecretInputString({
+        value: raw.yandex?.apiKey,
+        path: "messages.tts.yandex.apiKey",
+      }),
+      folderId: raw.yandex?.folderId?.trim() || undefined,
+      voice: raw.yandex?.voice?.trim() || DEFAULT_YANDEX_VOICE,
+      lang: raw.yandex?.lang?.trim() || DEFAULT_YANDEX_LANG,
+      role: raw.yandex?.role?.trim() || undefined,
+      speed: raw.yandex?.speed,
+      format: raw.yandex?.format?.trim() || DEFAULT_YANDEX_FORMAT,
+      sampleRateHertz: raw.yandex?.sampleRateHertz,
     },
     edge: {
       enabled: raw.edge?.enabled ?? true,
@@ -528,10 +560,13 @@ export function resolveTtsApiKey(
   if (provider === "openai") {
     return config.openai.apiKey || process.env.OPENAI_API_KEY;
   }
+  if (provider === "yandex") {
+    return config.yandex.apiKey || process.env.YANDEX_API_KEY || process.env.YANDEX_IAM_TOKEN;
+  }
   return undefined;
 }
 
-export const TTS_PROVIDERS = ["openai", "elevenlabs", "edge"] as const;
+export const TTS_PROVIDERS = ["openai", "elevenlabs", "edge", "yandex"] as const;
 
 export function resolveTtsProviderOrder(primary: TtsProvider): TtsProvider[] {
   return [primary, ...TTS_PROVIDERS.filter((provider) => provider !== primary)];
@@ -691,7 +726,24 @@ export async function textToSpeech(params: {
       }
 
       let audioBuffer: Buffer;
-      if (provider === "elevenlabs") {
+      if (provider === "yandex") {
+        const channelFormat =
+          channelId && VOICE_BUBBLE_CHANNELS.has(channelId)
+            ? TELEGRAM_OUTPUT.yandex
+            : DEFAULT_OUTPUT.yandex;
+        audioBuffer = await yandexTTS({
+          text: params.text,
+          apiKey,
+          folderId: config.yandex.folderId,
+          voice: config.yandex.voice,
+          lang: config.yandex.lang,
+          role: config.yandex.role,
+          speed: config.yandex.speed,
+          format: channelFormat,
+          sampleRateHertz: config.yandex.sampleRateHertz,
+          timeoutMs: config.timeoutMs,
+        });
+      } else if (provider === "elevenlabs") {
         const voiceIdOverride = params.overrides?.elevenlabs?.voiceId;
         const modelIdOverride = params.overrides?.elevenlabs?.modelId;
         const voiceSettings = {
@@ -744,7 +796,12 @@ export async function textToSpeech(params: {
         audioPath,
         latencyMs,
         provider,
-        outputFormat: provider === "openai" ? output.openai : output.elevenlabs,
+        outputFormat:
+          provider === "yandex"
+            ? output.yandex
+            : provider === "openai"
+              ? output.openai
+              : output.elevenlabs,
         voiceCompatible: output.voiceCompatible,
       };
     } catch (err) {
@@ -776,8 +833,8 @@ export async function textToSpeechTelephony(params: {
   for (const provider of providers) {
     const providerStart = Date.now();
     try {
-      if (provider === "edge") {
-        errors.push("edge: unsupported for telephony");
+      if (provider === "edge" || provider === "yandex") {
+        errors.push(`${provider}: unsupported for telephony`);
         continue;
       }
 

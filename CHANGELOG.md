@@ -4,6 +4,10 @@ Docs: https://docs.openclaw.ai
 
 ## Unreleased
 
+### Changes
+
+- TTS/Yandex SpeechKit: add Yandex SpeechKit as a TTS provider for message voice replies, with REST API v1 support, dual auth (API key and IAM token), voice roles, and OGG/Opus output for Telegram voice bubbles. Thanks @mrkhachaturov.
+
 ## 2026.3.13
 
 ### Changes
