@@ -93,6 +93,12 @@ final class TalkModeManager: NSObject {
     private(set) var activeProvider: String = TalkModeManager.defaultTalkProvider
     private var baseUrl: String?
     private var instructions: String?
+    // Yandex-specific
+    private(set) var role: String?
+    private var lang: String?
+    private var folderId: String?
+    private var authType: String?
+    private(set) var defaultSpeed: Double?
     /// Set when the ElevenLabs API rejects PCM format (e.g. 403 subscription_required).
     /// Once set, all subsequent requests in this session use MP3 instead of re-trying PCM.
     private var pcmFormatUnavailable: Bool = false
@@ -1015,6 +1021,8 @@ final class TalkModeManager: NSObject {
                 resolvedKey = configuredKey
             } else if self.activeProvider == "openai" {
                 resolvedKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
+            } else if self.activeProvider == "yandex" {
+                resolvedKey = ProcessInfo.processInfo.environment["YANDEX_API_KEY"]
             } else {
                 resolvedKey = ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]
             }
@@ -1022,9 +1030,49 @@ final class TalkModeManager: NSObject {
             let resolvedKey = configuredKey
             #endif
             let apiKey = resolvedKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let canUseYandex = self.activeProvider == "yandex" && (apiKey?.isEmpty == false)
             let canUseOpenAI = self.activeProvider == "openai" && (apiKey?.isEmpty == false)
 
-            if canUseOpenAI, let apiKey {
+            if canUseYandex, let apiKey {
+                // Yandex SpeechKit TTS path.
+                let voice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ?? self.currentVoiceId ?? self.defaultVoiceId ?? "marina"
+                let role = self.role
+                let lang = self.lang ?? "ru-RU"
+                GatewayDiagnostics.log("talk tts: provider=yandex voice=\(voice) role=\(role ?? "nil") lang=\(lang)")
+
+                let auth: YandexTTSAuth = if self.authType == "iamToken" {
+                    .iamToken(apiKey)
+                } else {
+                    .apiKey(apiKey)
+                }
+                let client = YandexTTSClient(
+                    auth: auth,
+                    folderId: self.folderId,
+                    v3BaseURL: self.baseUrl)
+                let stream = client.streamSynthesizeV3(
+                    text: cleaned,
+                    voice: voice,
+                    role: role,
+                    speed: directive?.speed ?? self.defaultSpeed,
+                    containerFormat: .oggOpus)
+
+                if self.interruptOnSpeech {
+                    do { try self.startRecognition() } catch {
+                        self.logger.warning(
+                            "startRecognition during speak failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+
+                self.statusText = "Speaking…"
+                self.lastPlaybackWasPCM = false
+                let result = await self.mp3Player.play(stream: stream)
+                let duration = Date().timeIntervalSince(started)
+                self.logger.info("yandex stream finished=\(result.finished, privacy: .public) dur=\(duration, privacy: .public)s")
+                if !result.finished, let interruptedAt = result.interruptedAt {
+                    self.lastInterruptedAtSeconds = interruptedAt
+                }
+            } else if canUseOpenAI, let apiKey {
                 // OpenAI TTS path — skip ElevenLabs voice resolution entirely.
                 let voice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
                     ?? self.currentVoiceId ?? self.defaultVoiceId ?? "alloy"
@@ -1036,7 +1084,7 @@ final class TalkModeManager: NSObject {
                     model: model,
                     voice: voice,
                     text: cleaned,
-                    speed: directive?.speed,
+                    speed: directive?.speed ?? self.defaultSpeed,
                     instructions: self.instructions
                 )
 
@@ -1247,9 +1295,9 @@ final class TalkModeManager: NSObject {
 
     private func applyDirective(_ directive: TalkDirective?) {
         let requestedVoice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        // OpenAI uses voice names directly (e.g. "ash"), not ElevenLabs aliases.
+        // OpenAI and Yandex use voice names directly, not ElevenLabs aliases.
         let resolvedVoice: String?
-        if self.activeProvider == "openai" {
+        if self.activeProvider == "openai" || self.activeProvider == "yandex" {
             resolvedVoice = requestedVoice
         } else {
             resolvedVoice = self.resolveVoiceAlias(requestedVoice)
@@ -1577,8 +1625,13 @@ final class TalkModeManager: NSObject {
                     directive: existing.directive,
                     canUseElevenLabs: existing.canUseElevenLabs,
                     canUseOpenAI: existing.canUseOpenAI,
+                    canUseYandex: existing.canUseYandex,
                     baseUrl: existing.baseUrl,
-                    instructions: existing.instructions)
+                    instructions: existing.instructions,
+                    role: existing.role,
+                    lang: existing.lang,
+                    folderId: existing.folderId,
+                    authType: existing.authType)
             }
             return
         }
@@ -1591,6 +1644,34 @@ final class TalkModeManager: NSObject {
         let requestedVoice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
         let modelId = directive?.modelId ?? self.currentModelId ?? self.defaultModelId
         let configuredKey = self.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? self.apiKey : nil
+
+        if self.activeProvider == "yandex" {
+            // Yandex path: voice names used directly, no alias resolution.
+            let voice = requestedVoice ?? self.currentVoiceId ?? self.defaultVoiceId ?? "marina"
+            #if DEBUG
+            let apiKey = (configuredKey ?? ProcessInfo.processInfo.environment["YANDEX_API_KEY"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #else
+            let apiKey = configuredKey
+            #endif
+            let canUseYandex = apiKey?.isEmpty == false
+            return IncrementalSpeechContext(
+                apiKey: apiKey,
+                voiceId: voice,
+                modelId: modelId,
+                outputFormat: nil,
+                language: self.incrementalSpeechLanguage,
+                directive: directive,
+                canUseElevenLabs: false,
+                canUseOpenAI: false,
+                canUseYandex: canUseYandex,
+                baseUrl: self.baseUrl,
+                instructions: self.instructions,
+                role: self.role,
+                lang: self.lang,
+                folderId: self.folderId,
+                authType: self.authType)
+        }
 
         if self.activeProvider == "openai" {
             // OpenAI path: voice names are used directly, no alias resolution or API calls.
@@ -1611,8 +1692,10 @@ final class TalkModeManager: NSObject {
                 directive: directive,
                 canUseElevenLabs: false,
                 canUseOpenAI: canUseOpenAI,
+                canUseYandex: false,
                 baseUrl: self.baseUrl,
-                instructions: self.instructions)
+                instructions: self.instructions,
+                role: nil, lang: nil, folderId: nil, authType: nil)
         }
 
         // ElevenLabs path: resolve voice aliases and validate output format.
@@ -1651,8 +1734,10 @@ final class TalkModeManager: NSObject {
             directive: directive,
             canUseElevenLabs: canUseElevenLabs,
             canUseOpenAI: false,
+            canUseYandex: false,
             baseUrl: self.baseUrl,
-            instructions: self.instructions)
+            instructions: self.instructions,
+            role: nil, lang: nil, folderId: nil, authType: nil)
     }
 
     private func makeIncrementalTTSRequest(
@@ -1747,7 +1832,8 @@ final class TalkModeManager: NSObject {
             context = resolvedContext
         }
 
-        guard context.canUseElevenLabs || context.canUseOpenAI, let apiKey = context.apiKey else {
+        guard context.canUseElevenLabs || context.canUseOpenAI || context.canUseYandex,
+              let apiKey = context.apiKey else {
             try? await TalkSystemSpeechSynthesizer.shared.speak(
                 text: text,
                 language: self.incrementalSpeechLanguage)
@@ -1755,7 +1841,28 @@ final class TalkModeManager: NSObject {
         }
 
         let rawStream: AsyncThrowingStream<Data, Error>
-        if context.canUseOpenAI {
+        if context.canUseYandex {
+            let voice = context.voiceId ?? "marina"
+            let auth: YandexTTSAuth = if context.authType == "iamToken" {
+                .iamToken(apiKey)
+            } else {
+                .apiKey(apiKey)
+            }
+            if let prefetchedAudio, !prefetchedAudio.chunks.isEmpty {
+                rawStream = Self.makeBufferedAudioStream(chunks: prefetchedAudio.chunks)
+            } else {
+                rawStream = YandexTTSClient(
+                    auth: auth,
+                    folderId: context.folderId,
+                    v3BaseURL: context.baseUrl)
+                    .streamSynthesizeV3(
+                        text: text,
+                        voice: voice,
+                        role: context.role,
+                        speed: context.directive?.speed,
+                        containerFormat: .oggOpus)
+            }
+        } else if context.canUseOpenAI {
             if let prefetchedAudio, !prefetchedAudio.chunks.isEmpty {
                 rawStream = Self.makeBufferedAudioStream(chunks: prefetchedAudio.chunks)
             } else {
@@ -1789,7 +1896,7 @@ final class TalkModeManager: NSObject {
             }
         }
         let playbackFormat = prefetchedAudio?.outputFormat ?? context.outputFormat
-        let sampleRate = context.canUseOpenAI ? nil : TalkTTSValidation.pcmSampleRate(from: playbackFormat)
+        let sampleRate = (context.canUseOpenAI || context.canUseYandex) ? nil : TalkTTSValidation.pcmSampleRate(from: playbackFormat)
         let result: StreamingPlaybackResult
         if let sampleRate, let voiceId = context.voiceId {
             let streamFailure = StreamFailureBox()
@@ -2156,7 +2263,12 @@ extension TalkModeManager {
             self.activeProvider = activeProvider
             self.baseUrl = parsed.baseUrl
             self.instructions = parsed.instructions
-            if activeProvider != Self.defaultTalkProvider, activeProvider != "openai" {
+            self.role = parsed.role
+            self.lang = parsed.lang
+            self.folderId = parsed.folderId
+            self.authType = parsed.authType
+            self.defaultSpeed = parsed.speed
+            if activeProvider != Self.defaultTalkProvider, activeProvider != "openai", activeProvider != "yandex" {
                 self.apiKey = nil
                 GatewayDiagnostics.log(
                     "talk provider '\(activeProvider)' not yet supported on iOS; using system voice fallback")
@@ -2327,8 +2439,14 @@ private struct IncrementalSpeechContext: Equatable {
     let directive: TalkDirective?
     let canUseElevenLabs: Bool
     let canUseOpenAI: Bool
+    let canUseYandex: Bool
     let baseUrl: String?
     let instructions: String?
+    // Yandex-specific
+    let role: String?
+    let lang: String?
+    let folderId: String?
+    let authType: String?
 }
 
 private struct IncrementalSpeechPrefetchState {

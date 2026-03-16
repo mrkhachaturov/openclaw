@@ -319,7 +319,7 @@ struct SettingsTab: View {
                                 Text("Talk Voice (Gateway)")
                                     .font(.footnote.weight(.semibold))
                                     .foregroundStyle(.secondary)
-                                LabeledContent("Provider", value: self.appModel.talkMode.activeProvider.capitalized)
+                                LabeledContent("Provider", value: Self.talkProviderDisplayName(self.appModel.talkMode.activeProvider))
                                 LabeledContent(
                                     "API Key",
                                     value: self.appModel.talkMode.gatewayTalkConfigLoaded
@@ -329,12 +329,20 @@ struct SettingsTab: View {
                                                 : "Not configured"
                                         )
                                         : "Not loaded")
-                                LabeledContent(
-                                    "Default Model",
-                                    value: self.appModel.talkMode.gatewayTalkDefaultModelId ?? "eleven_v3 (fallback)")
+                                if self.appModel.talkMode.activeProvider != "yandex" {
+                                    LabeledContent(
+                                        "Default Model",
+                                        value: self.appModel.talkMode.gatewayTalkDefaultModelId ?? "eleven_v3 (fallback)")
+                                }
                                 LabeledContent(
                                     "Default Voice",
                                     value: self.appModel.talkMode.gatewayTalkDefaultVoiceId ?? "auto (first available)")
+                                if let role = self.appModel.talkMode.role, !role.isEmpty {
+                                    LabeledContent("Role", value: role)
+                                }
+                                if let speed = self.appModel.talkMode.defaultSpeed {
+                                    LabeledContent("Speed", value: String(format: "%.1f", speed))
+                                }
                                 Text("Configured on gateway via talk.providers.\(self.appModel.talkMode.activeProvider).")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
@@ -595,6 +603,15 @@ struct SettingsTab: View {
         }
         let trimmed = self.appModel.gatewayStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Not connected" : trimmed
+    }
+
+    private static func talkProviderDisplayName(_ provider: String) -> String {
+        switch provider {
+        case "elevenlabs": return "ElevenLabs"
+        case "openai": return "OpenAI"
+        case "yandex": return "Yandex"
+        default: return provider.capitalized
+        }
     }
 
     private func featureToggle(

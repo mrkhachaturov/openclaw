@@ -1,5 +1,5 @@
 {
-  "originHash" : "3a5bd0be12b4be95c7c70c393b7af3e826b9f4acef29e02798ebbc66dfaaad94",
+  "originHash" : "2c6b8a672e90a62d5cfc51089acf35b8aebc4f86ba1138f9d5bc8eace895b375",
   "pins" : [
     {
       "identity" : "commander",
@@ -71,6 +71,15 @@
       "state" : {
         "revision" : "5b06b811c0f5313b6b84bbef98c635a630638c38",
         "version" : "0.3.1"
+      }
+    },
+    {
+      "identity" : "yandexttskit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mrkhachaturov/YandexTTSKit",
+      "state" : {
+        "revision" : "be3b50a12a8fe525baab81c27d95f3895babf9f6",
+        "version" : "0.2.0"
       }
     }
   ],
