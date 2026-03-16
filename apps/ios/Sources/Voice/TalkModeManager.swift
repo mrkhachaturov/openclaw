@@ -569,6 +569,7 @@ final class TalkModeManager: NSObject {
 
                 if segment.endOfUtterance {
                     // Provider detected end-of-utterance (e.g. Parakeet silence detection).
+                    guard !trimmed.isEmpty else { continue }
                     GatewayDiagnostics.log("talk speech: endOfUtterance chars=\(trimmed.count)")
                     self.loggedPartialThisCycle = false
                     if self.captureMode == .continuous, !self.isSpeechOutputActive {
