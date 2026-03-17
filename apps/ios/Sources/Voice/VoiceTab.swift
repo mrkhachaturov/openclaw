@@ -33,6 +33,7 @@ struct VoiceTab: View {
                     }
                     .foregroundStyle(.secondary)
                 }
+
             }
             .navigationTitle("Voice")
             .onChange(of: self.voiceWakeEnabled) { _, newValue in
