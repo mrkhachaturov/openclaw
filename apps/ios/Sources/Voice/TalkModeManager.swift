@@ -97,6 +97,9 @@ final class TalkModeManager: NSObject {
     private var authType: String?
     private(set) var defaultSpeed: Double?
     private(set) var talkPromptOverride: String?
+    /// Active agent ID — set by NodeAppModel when the user switches agents.
+    /// Used to resolve per-agent voice overrides from TalkVoicePreferences.
+    private(set) var activeAgentId: String?
     /// Set when the ElevenLabs API rejects PCM format (e.g. 403 subscription_required).
     /// Once set, all subsequent requests in this session use MP3 instead of re-trying PCM.
     private var pcmFormatUnavailable: Bool = false
@@ -155,6 +158,13 @@ final class TalkModeManager: NSObject {
                 self.statusText = "Offline"
             }
         }
+    }
+
+    func updateActiveAgentId(_ agentId: String?) {
+        self.activeAgentId = agentId
+        // Invalidate cached incremental speech context so it rebuilds
+        // with the new agent's voice/instructions overrides.
+        self.incrementalSpeechContext = nil
     }
 
     func updateMainSessionKey(_ sessionKey: String?) {
@@ -1031,10 +1041,15 @@ final class TalkModeManager: NSObject {
                 }
             } else if canUseOpenAI, let apiKey {
                 // OpenAI TTS path — skip ElevenLabs voice resolution entirely.
+                // Per-agent voice override: TalkDirective (per-message) > UserDefaults (per-agent) > gateway config
+                let agentVoice = self.activeAgentId.flatMap { TalkVoicePreferences.voiceId(for: $0) }
+                let agentInstructions = self.activeAgentId.flatMap { TalkVoicePreferences.instructions(for: $0) }
+
                 let voice = directive?.voiceId?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    ?? self.currentVoiceId ?? self.defaultVoiceId ?? "alloy"
+                    ?? agentVoice ?? self.currentVoiceId ?? self.defaultVoiceId ?? "alloy"
                 let model = directive?.modelId ?? self.currentModelId ?? self.defaultModelId ?? "gpt-4o-mini-tts"
-                GatewayDiagnostics.log("talk tts: provider=openai voice=\(voice) model=\(model)")
+                let effectiveInstructions = agentInstructions ?? self.instructions
+                GatewayDiagnostics.log("talk tts: provider=openai voice=\(voice) model=\(model) agent=\(self.activeAgentId ?? "default")")
 
                 let client = OpenAITTSClient(apiKey: apiKey, baseUrl: self.baseUrl)
                 let stream = client.streamSynthesize(
@@ -1042,7 +1057,7 @@ final class TalkModeManager: NSObject {
                     voice: voice,
                     text: cleaned,
                     speed: directive?.speed ?? self.defaultSpeed,
-                    instructions: self.instructions
+                    instructions: effectiveInstructions
                 )
 
                 if self.interruptOnSpeech {
@@ -1635,7 +1650,11 @@ final class TalkModeManager: NSObject {
 
         if self.activeProvider == "openai" {
             // OpenAI path: voice names are used directly, no alias resolution or API calls.
-            let voice = requestedVoice ?? self.currentVoiceId ?? self.defaultVoiceId ?? "alloy"
+            // Per-agent override: TalkDirective > per-agent UserDefaults > gateway config
+            let agentVoice = self.activeAgentId.flatMap { TalkVoicePreferences.voiceId(for: $0) }
+            let agentInstructions = self.activeAgentId.flatMap { TalkVoicePreferences.instructions(for: $0) }
+            let voice = requestedVoice ?? agentVoice ?? self.currentVoiceId ?? self.defaultVoiceId ?? "alloy"
+            let effectiveInstructions = agentInstructions ?? self.instructions
             #if DEBUG
             let apiKey = (configuredKey ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"])?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1654,7 +1673,7 @@ final class TalkModeManager: NSObject {
                 canUseOpenAI: canUseOpenAI,
                 canUseYandex: false,
                 baseUrl: self.baseUrl,
-                instructions: self.instructions,
+                instructions: effectiveInstructions,
                 role: nil, lang: nil, folderId: nil, authType: nil)
         }
 
