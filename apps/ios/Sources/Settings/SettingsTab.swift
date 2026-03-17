@@ -391,6 +391,10 @@ struct SettingsTab: View {
 
                     SpeechRecognitionSettingsView()
 
+                    DisclosureGroup("Agent Voices") {
+                        AgentVoiceSettingsView()
+                    }
+
                     DisclosureGroup("Device Info") {
                         TextField("Name", text: self.$displayName)
                         Text(self.instanceId)

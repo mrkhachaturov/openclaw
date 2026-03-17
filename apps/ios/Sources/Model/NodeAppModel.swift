@@ -588,6 +588,7 @@ final class NodeAppModel {
                 if !selected.isEmpty && !decoded.agents.contains(where: { $0.id == selected }) {
                     self.selectedAgentId = nil
                 }
+                self.talkMode.updateActiveAgentId(self.selectedAgentId)
                 self.talkMode.updateMainSessionKey(self.mainSessionKey)
                 self.homeCanvasRevision &+= 1
             }
@@ -611,6 +612,7 @@ final class NodeAppModel {
             self.selectedAgentId = trimmed.isEmpty ? nil : trimmed
             GatewaySettingsStore.saveGatewaySelectedAgentId(stableID: stableID, agentId: self.selectedAgentId)
         }
+        self.talkMode.updateActiveAgentId(self.selectedAgentId)
         self.talkMode.updateMainSessionKey(self.mainSessionKey)
         self.homeCanvasRevision &+= 1
         if let relay = ShareGatewayRelaySettings.loadConfig() {
@@ -1794,6 +1796,7 @@ private extension NodeAppModel {
         self.gatewayDefaultAgentId = nil
         self.gatewayAgents = []
         self.selectedAgentId = GatewaySettingsStore.loadGatewaySelectedAgentId(stableID: stableID)
+        self.talkMode.updateActiveAgentId(self.selectedAgentId)
         self.homeCanvasRevision &+= 1
         self.apnsLastRegisteredTokenHex = nil
     }
