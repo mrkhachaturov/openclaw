@@ -168,11 +168,9 @@ struct RootCanvas: View {
             self.updateIdleTimer()
             self.updateHomeCanvasState()
             guard newValue == .active else { return }
-            Task {
+            Task { @MainActor in
                 await self.appModel.refreshGatewayOverviewIfConnected()
-                await MainActor.run {
-                    self.updateHomeCanvasState()
-                }
+                self.updateHomeCanvasState()
             }
         }
         .onAppear { self.maybeShowQuickSetup() }
@@ -223,12 +221,10 @@ struct RootCanvas: View {
                 self.voiceWakeToastText = trimmed
             }
 
-            self.toastDismissTask = Task {
+            self.toastDismissTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 2_300_000_000)
-                await MainActor.run {
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        self.voiceWakeToastText = nil
-                    }
+                withAnimation(.easeOut(duration: 0.25)) {
+                    self.voiceWakeToastText = nil
                 }
             }
         }
