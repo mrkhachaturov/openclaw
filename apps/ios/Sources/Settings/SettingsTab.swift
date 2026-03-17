@@ -389,6 +389,8 @@ struct SettingsTab: View {
                         }
                     }
 
+                    SpeechRecognitionSettingsView()
+
                     DisclosureGroup("Device Info") {
                         TextField("Name", text: self.$displayName)
                         Text(self.instanceId)
@@ -501,18 +503,14 @@ struct SettingsTab: View {
                 let previous = self.lastLocationModeRaw
                 self.lastLocationModeRaw = newValue
                 guard let mode = OpenClawLocationMode(rawValue: newValue) else { return }
-                Task {
+                Task { @MainActor in
                     let granted = await self.appModel.requestLocationPermissions(mode: mode)
                     if !granted {
-                        await MainActor.run {
-                            self.locationEnabledModeRaw = previous
-                            self.lastLocationModeRaw = previous
-                        }
+                        self.locationEnabledModeRaw = previous
+                        self.lastLocationModeRaw = previous
                         return
                     }
-                    await MainActor.run {
-                        self.gatewayController.refreshActiveGatewayRegistrationFromSettings()
-                    }
+                    self.gatewayController.refreshActiveGatewayRegistrationFromSettings()
                 }
             }
         }
@@ -639,6 +637,7 @@ struct SettingsTab: View {
         }
     }
 
+    @MainActor
     private func connect(_ gateway: GatewayDiscoveryModel.DiscoveredGateway) async {
         self.connectingGatewayID = gateway.id
         self.manualGatewayEnabled = false
@@ -654,6 +653,7 @@ struct SettingsTab: View {
         }
     }
 
+    @MainActor
     private func connectLastKnown() async {
         self.connectingGatewayID = "last-known"
         defer { self.connectingGatewayID = nil }
@@ -731,6 +731,7 @@ struct SettingsTab: View {
         }
     }
 
+    @MainActor
     private func applySetupCodeAndConnect() async {
         self.setupStatusText = nil
         guard self.applySetupCode() else { return }
@@ -850,6 +851,7 @@ struct SettingsTab: View {
         return 18789
     }
 
+    @MainActor
     private func preflightGateway(host: String, port: Int, useTLS: Bool) async -> Bool {
         let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -885,6 +887,7 @@ struct SettingsTab: View {
 
     // (GatewaySetupCode) decode raw setup codes.
 
+    @MainActor
     private func connectManual() async {
         let host = self.manualGatewayHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else {

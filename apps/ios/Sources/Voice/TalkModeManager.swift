@@ -65,6 +65,7 @@ final class TalkModeManager: NSObject {
     private let audioEngine = AVAudioEngine()
     private var speechProvider: (any SpeechRecognitionProviding)?
     private var recognitionStreamTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var parakeetModelManager = ParakeetModelManager()
     private var silenceTask: Task<Void, Never>?
 
     private var lastHeard: Date?
@@ -134,8 +135,10 @@ final class TalkModeManager: NSObject {
         case .apple:
             return AppleSpeechRecognitionProvider()
         case .parakeet:
-            // Parakeet support added in patch 0008
-            return AppleSpeechRecognitionProvider()
+            guard parakeetModelManager.modelURL(for: "parakeet-v3") != nil else {
+                return AppleSpeechRecognitionProvider()
+            }
+            return ParakeetSpeechRecognitionProvider(modelManager: parakeetModelManager)
         }
     }
 

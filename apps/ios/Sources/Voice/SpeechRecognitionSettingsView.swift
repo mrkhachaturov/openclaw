@@ -7,7 +7,7 @@ struct SpeechRecognitionSettingsView: View {
         Section("Speech Recognition") {
             Picker("Provider", selection: $activeProvider) {
                 Text("Apple (Built-in)").tag(SpeechRecognitionProviderKind.apple)
-                Text("Parakeet (Local)").tag(SpeechRecognitionProviderKind.parakeet)
+                Text("Parakeet V3").tag(SpeechRecognitionProviderKind.parakeet)
             }
             .onChange(of: activeProvider) { _, newValue in
                 SpeechRecognitionPreferences.activeProvider = newValue

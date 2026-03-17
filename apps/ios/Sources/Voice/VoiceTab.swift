@@ -34,7 +34,6 @@ struct VoiceTab: View {
                     .foregroundStyle(.secondary)
                 }
 
-                SpeechRecognitionSettingsView()
             }
             .navigationTitle("Voice")
             .onChange(of: self.voiceWakeEnabled) { _, newValue in

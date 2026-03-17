@@ -65,12 +65,14 @@ final class AppleSpeechRecognitionProvider: SpeechRecognitionProviding {
             throw SpeechRecognitionError.audioFormatInvalid
         }
 
-        // Remove any stale tap and install ours.
+        // The audio tap runs on a real-time thread. In Swift 6, ANY closure
+        // formed inside a @MainActor function that captures local variables
+        // gets a runtime isolation check — crashing on the audio thread.
+        // Solution: install the tap from a nonisolated static function so the
+        // closure is formed outside any actor context.
+        let tapHandler = AudioTapHandler(request: request, provider: self)
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
-            request.append(buffer)
-            self?.processAudioBuffer(buffer)
-        }
+        Self.installTap(on: input, format: format, handler: tapHandler)
         self.inputTapInstalled = true
 
         audioEngine.prepare()
@@ -90,8 +92,6 @@ final class AppleSpeechRecognitionProvider: SpeechRecognitionProviding {
                     return
                 }
                 GatewayDiagnostics.log("apple-stt: error=\(msg)")
-                // On non-cancellation errors, finish the stream so the consumer
-                // can decide whether to restart (transient) or surface the error.
                 continuation.finish()
                 return
             }
@@ -106,7 +106,6 @@ final class AppleSpeechRecognitionProvider: SpeechRecognitionProviding {
         }
 
         continuation.onTermination = { [weak self] _ in
-            // Safety net: if the stream consumer drops, stop the task.
             Task { @MainActor in
                 self?.recognitionTask?.cancel()
             }
@@ -133,43 +132,32 @@ final class AppleSpeechRecognitionProvider: SpeechRecognitionProviding {
             engine.inputNode.removeTap(onBus: 0)
             self.inputTapInstalled = false
         }
-        // Note: we do NOT stop the audioEngine here. The host (TalkModeManager)
-        // owns the engine and is responsible for starting/stopping it.
         self.speechRecognizer = nil
         self.audioEngine = nil
     }
 
-    // MARK: - Audio buffer processing (RMS + noise floor)
+    // MARK: - Tap installation (nonisolated to avoid actor isolation in closure)
 
-    /// Called from the audio tap (real-time thread). Computes RMS and dispatches
-    /// mic-level / noise-floor updates back to the main actor.
-    private nonisolated func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
-        let frames = buffer.frameLength
-        guard frames > 0, let data = buffer.floatChannelData?.pointee else { return }
-
-        // RMS calculation (inlined to keep the provider self-contained).
-        let n = Int(frames)
-        var sum: Float = 0
-        for i in 0..<n {
-            let v = data[i]
-            sum += v * v
-        }
-        let rms = sqrt(sum / Float(n))
-
-        Task { @MainActor [weak self] in
-            self?.updateLevels(rms: rms)
+    /// Must be nonisolated so the closure is formed outside @MainActor context.
+    /// Otherwise Swift 6 inserts runtime isolation checks that crash on the audio thread.
+    nonisolated private static func installTap(
+        on input: AVAudioInputNode,
+        format: AVAudioFormat,
+        handler: AudioTapHandler
+    ) {
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
+            handler.handle(buffer: buffer)
         }
     }
 
+    // MARK: - Audio level + noise floor
+
     /// Update mic level and noise floor state on the main actor.
-    private func updateLevels(rms: Float) {
-        // Smooth + clamp for UI (mirrors TalkModeManager's existing logic).
+    fileprivate func updateLevels(rms: Float) {
         let raw = max(0, min(Double(rms) * 10.0, 1.0))
         let next = (self.micLevel * 0.80) + (raw * 0.20)
         self.micLevel = next
 
-        // Dynamic noise-floor calibration: collect 22 initial samples, take
-        // sorted median of lower half, then threshold = clamp(avg + 0.10, 0.12, 0.35).
         if !self.noiseFloorReady {
             self.noiseFloorSamples.append(raw)
             if self.noiseFloorSamples.count >= 22 {
@@ -195,6 +183,38 @@ final class AppleSpeechRecognitionProvider: SpeechRecognitionProviding {
         }
         if raw >= threshold {
             self.lastAudioActivity = Date()
+        }
+    }
+}
+
+// MARK: - Audio tap handler (@unchecked Sendable)
+
+/// Wraps everything the audio tap closure needs into a single @unchecked Sendable
+/// type so nothing from the @MainActor context is captured directly by the tap.
+/// This is the standard pattern for bridging real-time audio threads to Swift actors.
+private final class AudioTapHandler: @unchecked Sendable {
+    private let request: SFSpeechAudioBufferRecognitionRequest
+    private weak var provider: AppleSpeechRecognitionProvider?
+
+    init(request: SFSpeechAudioBufferRecognitionRequest, provider: AppleSpeechRecognitionProvider) {
+        self.request = request
+        self.provider = provider
+    }
+
+    func handle(buffer: AVAudioPCMBuffer) {
+        request.append(buffer)
+
+        guard let data = buffer.floatChannelData?.pointee else { return }
+        let n = Int(buffer.frameLength)
+        guard n > 0 else { return }
+        var sum: Float = 0
+        for i in 0..<n {
+            sum += data[i] * data[i]
+        }
+        let rms = sqrt(sum / Float(n))
+
+        Task { @MainActor [weak provider] in
+            provider?.updateLevels(rms: rms)
         }
     }
 }
