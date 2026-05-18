@@ -15,6 +15,12 @@ packages:
     path: ../shared/OpenClawKit
   Swabble:
     path: ../swabble
+  xAITTSKit:
+    url: https://github.com/mrkhachaturov/xAITTSKit.git
+    exactVersion: 0.3.1
+  xAISTTKit:
+    url: https://github.com/mrkhachaturov/xAISTTKit.git
+    exactVersion: 0.3.1
 
 schemes:
   OpenClaw:
@@ -57,6 +63,8 @@ targets:
         product: OpenClawProtocol
       - package: Swabble
         product: SwabbleKit
+      - package: xAITTSKit
+      - package: xAISTTKit
       - sdk: AppIntents.framework
     preBuildScripts:
       - name: SwiftFormat (lint)

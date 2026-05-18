@@ -89,6 +89,10 @@ final class TalkModeManager: NSObject {
     private var interruptOnSpeech: Bool = true
     private var gatewaySpeechLocaleID: String?
     private var mainSessionKey: String = "main"
+    /// Active Talk provider from the gateway config (e.g. "elevenlabs", "xai").
+    /// Used to dispatch STT capture and TTS playback to the right backend.
+    private var activeProvider: String = TalkModeManager.defaultTalkProvider
+    private let xaiPipeline = XaiTalkPipeline()
     private var fallbackVoiceId: String?
     private var lastPlaybackWasPCM: Bool = false
     /// Set when the ElevenLabs API rejects PCM format (e.g. 403 subscription_required).
@@ -493,12 +497,16 @@ final class TalkModeManager: NSObject {
             self.recognitionRequest?.shouldReportPartialResults = true
             return
         }
-        if !self.allowSimulatorCapture {
-            throw NSError(domain: "TalkMode", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Talk mode is not supported on the iOS simulator",
-            ])
-        }
+        throw NSError(domain: "TalkMode", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "Talk mode is not supported on the iOS simulator",
+        ])
         #endif
+
+        // xAI provider runs its own mic-tap + WS STT pipeline.
+        if self.activeProvider == "xai" {
+            try self.startXaiRecognition()
+            return
+        }
 
         self.stopRecognition()
         let localSpeechLocale = UserDefaults.standard.string(forKey: TalkSpeechLocale.storageKey)
@@ -662,6 +670,10 @@ final class TalkModeManager: NSObject {
         }
         self.audioEngine.stop()
         self.speechRecognizer = nil
+        // Tear down the xAI WS session if it was active.
+        Task { @MainActor [weak self] in
+            await self?.xaiPipeline.stopSTT()
+        }
     }
 
     private nonisolated static func makeAudioTapAppendCallback(
@@ -672,6 +684,80 @@ final class TalkModeManager: NSObject {
             request.append(buffer)
             diagnostics.onBuffer(buffer)
         }
+    }
+
+    // MARK: - xAI Talk Mode
+
+    private func startXaiRecognition() throws {
+        let bearer = self.normalizedBearer()
+        guard !bearer.isEmpty else {
+            throw NSError(domain: "TalkMode", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "xAI bearer not configured by gateway",
+            ])
+        }
+        let language = XaiTalkPipeline.sttLanguage(from: self.gatewaySpeechLocaleID)
+        GatewayDiagnostics.log(
+            "xai-stt: starting recognition language=\(language?.rawValue ?? "auto")")
+        self.loggedPartialThisCycle = false
+        let engine = self.audioEngine
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.xaiPipeline.startSTT(
+                    audioEngine: engine,
+                    bearer: bearer,
+                    language: language)
+                { [weak self] text, isFinal in
+                    Task { @MainActor [weak self] in
+                        await self?.handleTranscript(transcript: text, isFinal: isFinal)
+                    }
+                }
+            } catch {
+                self.logger.error("xai-stt start failed: \(error.localizedDescription, privacy: .public)")
+                GatewayDiagnostics.log("xai-stt: open failed err=\(error.localizedDescription)")
+                self.statusText = "Speech error: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func playAssistantViaXai(text: String, directive: TalkDirective?) async {
+        let bearer = self.normalizedBearer()
+        guard !bearer.isEmpty else {
+            self.logger.warning("xai-tts unavailable: bearer not configured; falling back to system voice")
+            GatewayDiagnostics.log("xai-tts: provider=system (no bearer)")
+            self.statusText = "Speaking (System)…"
+            let language = ElevenLabsTTSClient.validatedLanguage(directive?.language)
+            try? await TalkSystemSpeechSynthesizer.shared.speak(text: text, language: language)
+            return
+        }
+        let voiceName = directive?.voiceId ?? self.currentVoiceId ?? self.defaultVoiceId
+        let resolvedVoice = XaiTalkPipeline.ttsVoice(from: voiceName)
+        let language = XaiTalkPipeline.ttsLanguage(from: directive?.language ?? self.gatewaySpeechLocaleID)
+
+        // v1 skips barge-in: xAI STT WS + TTS WS both bind to the same
+        // AVAudioEngine, so simultaneous mic-tap + player-node is sequenced
+        // explicitly. Stop active STT before speaking; restart afterwards.
+        await self.xaiPipeline.stopSTT()
+
+        self.statusText = "Speaking…"
+        GatewayDiagnostics.log(
+            "xai-tts: voice=\(resolvedVoice?.rawValue ?? "default") language=\(language.rawValue)")
+        do {
+            try await self.xaiPipeline.speak(
+                audioEngine: self.audioEngine,
+                text: text,
+                bearer: bearer,
+                language: language,
+                voice: resolvedVoice)
+        } catch {
+            self.logger.error("xai-tts failed: \(error.localizedDescription, privacy: .public)")
+            GatewayDiagnostics.log("xai-tts: error msg=\(error.localizedDescription)")
+            self.statusText = "Speak failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func normalizedBearer() -> String {
+        (self.apiKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func handleTranscript(transcript: String, isFinal: Bool) async {
@@ -1021,6 +1107,14 @@ final class TalkModeManager: NSObject {
         self.statusText = "Generating voice…"
         self.isSpeaking = true
         self.lastSpokenText = cleaned
+
+        // xAI provider runs its own WS TTS pipeline.
+        if self.activeProvider == "xai" {
+            await self.playAssistantViaXai(text: cleaned, directive: directive)
+            self.stopRecognition()
+            self.isSpeaking = false
+            return
+        }
 
         do {
             let started = Date()
@@ -2013,6 +2107,7 @@ extension TalkModeManager {
                     "talk config ignored: normalized payload missing talk.resolved")
             }
             let activeProvider = parsed.activeProvider
+            self.activeProvider = activeProvider
             self.defaultVoiceId = parsed.defaultVoiceId
             self.voiceAliases = parsed.voiceAliases
             if !self.voiceOverrideActive {
@@ -2033,7 +2128,10 @@ extension TalkModeManager {
             } else {
                 self.apiKey = (localApiKey?.isEmpty == false) ? localApiKey : configApiKey
             }
-            if activeProvider != Self.defaultTalkProvider {
+            // iOS-supported providers receive their bearer through `talk.config`.
+            // Anything else falls back to the system voice (no key).
+            let iOSSupportedProviders: Set<String> = [Self.defaultTalkProvider, "xai"]
+            if !iOSSupportedProviders.contains(activeProvider) {
                 self.apiKey = nil
                 GatewayDiagnostics.log(
                     "talk provider '\(activeProvider)' not yet supported on iOS; using system voice fallback")
